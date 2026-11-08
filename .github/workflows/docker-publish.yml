@@ -3,7 +3,7 @@
 # =============================================================================
 #
 # This workflow builds all 7 DataPilot service images and pushes them to
-# ghcr.io/rahulkatiyar19955/datapilot-<service>. The Electron desktop app
+# ghcr.io/bringup-labs/datapilot-<service>. The Electron desktop app
 # (dockerOrchestrator.ts) and docker-compose.yml reference these images so
 # end-users never have to build from source locally.
 #

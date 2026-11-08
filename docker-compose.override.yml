@@ -17,40 +17,40 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    image: ghcr.io/rahulkatiyar19955/datapilot-backend:latest
+    image: ghcr.io/bringup-labs/datapilot-backend:latest
 
   mcap-parser:
     build:
       context: .
       dockerfile: mcap_parser/Dockerfile
-    image: ghcr.io/rahulkatiyar19955/datapilot-mcap-parser:latest
+    image: ghcr.io/bringup-labs/datapilot-mcap-parser:latest
 
   rosbag-reader:
     build:
       context: .
       dockerfile: mcp_workers/rosbag_reader/Dockerfile
-    image: ghcr.io/rahulkatiyar19955/datapilot-mcp-rosbag-reader:latest
+    image: ghcr.io/bringup-labs/datapilot-mcp-rosbag-reader:latest
 
   trajectory-analyzer:
     build:
       context: .
       dockerfile: mcp_workers/trajectory_analyzer/Dockerfile
-    image: ghcr.io/rahulkatiyar19955/datapilot-mcp-trajectory-analyzer:latest
+    image: ghcr.io/bringup-labs/datapilot-mcp-trajectory-analyzer:latest
 
   planner-failure-inspector:
     build:
       context: .
       dockerfile: mcp_workers/planner_failure_inspector/Dockerfile
-    image: ghcr.io/rahulkatiyar19955/datapilot-mcp-planner-failure-inspector:latest
+    image: ghcr.io/bringup-labs/datapilot-mcp-planner-failure-inspector:latest
 
   anomaly-detector:
     build:
       context: .
       dockerfile: mcp_workers/anomaly_detector/Dockerfile
-    image: ghcr.io/rahulkatiyar19955/datapilot-mcp-anomaly-detector:latest
+    image: ghcr.io/bringup-labs/datapilot-mcp-anomaly-detector:latest
 
   report-composer:
     build:
       context: .
       dockerfile: mcp_workers/report_composer/Dockerfile
-    image: ghcr.io/rahulkatiyar19955/datapilot-mcp-report-composer:latest
+    image: ghcr.io/bringup-labs/datapilot-mcp-report-composer:latest

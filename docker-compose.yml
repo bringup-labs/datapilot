@@ -47,7 +47,7 @@ services:
       retries: 12
 
   backend:
-    image: ghcr.io/rahulkatiyar19955/datapilot-backend:latest
+    image: ghcr.io/bringup-labs/datapilot-backend:latest
     container_name: datapilot-backend
     networks: [datapilot-net]
     ports:
@@ -73,7 +73,7 @@ services:
       retries: 12
 
   mcap-parser:
-    image: ghcr.io/rahulkatiyar19955/datapilot-mcap-parser:latest
+    image: ghcr.io/bringup-labs/datapilot-mcap-parser:latest
     container_name: datapilot-mcap-parser
     networks: [datapilot-net]
     ports:
@@ -97,7 +97,7 @@ services:
   # `mcp_stdio.WorkerHandle` pool when `DATAPILOT_MCP_TRANSPORT=stdio`
   # (the production default).
   rosbag-reader:
-    image: ghcr.io/rahulkatiyar19955/datapilot-mcp-rosbag-reader:latest
+    image: ghcr.io/bringup-labs/datapilot-mcp-rosbag-reader:latest
     container_name: datapilot-rosbag-reader
     networks: [datapilot-net]
     ports:
@@ -118,7 +118,7 @@ services:
       retries: 12
 
   trajectory-analyzer:
-    image: ghcr.io/rahulkatiyar19955/datapilot-mcp-trajectory-analyzer:latest
+    image: ghcr.io/bringup-labs/datapilot-mcp-trajectory-analyzer:latest
     container_name: datapilot-trajectory-analyzer
     networks: [datapilot-net]
     ports:
@@ -138,7 +138,7 @@ services:
       retries: 12
 
   planner-failure-inspector:
-    image: ghcr.io/rahulkatiyar19955/datapilot-mcp-planner-failure-inspector:latest
+    image: ghcr.io/bringup-labs/datapilot-mcp-planner-failure-inspector:latest
     container_name: datapilot-planner-failure-inspector
     networks: [datapilot-net]
     ports:
@@ -160,7 +160,7 @@ services:
       retries: 12
 
   anomaly-detector:
-    image: ghcr.io/rahulkatiyar19955/datapilot-mcp-anomaly-detector:latest
+    image: ghcr.io/bringup-labs/datapilot-mcp-anomaly-detector:latest
     container_name: datapilot-anomaly-detector
     networks: [datapilot-net]
     ports:
@@ -180,7 +180,7 @@ services:
       retries: 12
 
   report-composer:
-    image: ghcr.io/rahulkatiyar19955/datapilot-mcp-report-composer:latest
+    image: ghcr.io/bringup-labs/datapilot-mcp-report-composer:latest
     container_name: datapilot-report-composer
     networks: [datapilot-net]
     ports:
