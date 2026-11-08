@@ -729,9 +729,10 @@ class IngestionParser:
     def _parse_db3(self, filepath: str) -> Dict[str, Any]:
         # Fallback raw SQLite db3 reader using rosbags
         from rosbags.rosbag2 import Reader
-        from rosbags.serde import deserialize_cdr
+        from rosbags.typesys import Stores, get_typestore
         import json
 
+        typestore = get_typestore(Stores.ROS2_HUMBLE)
         logs = []
         topics_dict = {}
         diagnostics = []
@@ -790,7 +791,7 @@ class IngestionParser:
                     continue
 
                 try:
-                    msg = deserialize_cdr(rawdata, connection.msgtype)
+                    msg = typestore.deserialize_cdr(rawdata, connection.msgtype)
                 except Exception:
                     continue
 

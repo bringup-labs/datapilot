@@ -457,9 +457,10 @@ def _parse_mcap(filepath: str) -> dict[str, Any]:
 
 def _parse_db3(filepath: str) -> dict[str, Any]:
     from rosbags.rosbag2 import Reader
-    from rosbags.serde import deserialize_cdr
+    from rosbags.typesys import Stores, get_typestore
     import json
 
+    typestore = get_typestore(Stores.ROS2_HUMBLE)
     warnings: list[str] = []
     tf_parser = _TFParser()
     logs: list[dict] = []
@@ -506,7 +507,7 @@ def _parse_db3(filepath: str) -> dict[str, Any]:
                     continue
 
                 try:
-                    msg = deserialize_cdr(rawdata, connection.msgtype)
+                    msg = typestore.deserialize_cdr(rawdata, connection.msgtype)
                 except Exception as exc:
                     warnings.append(f"CDR decode failed for {topic!r} ({connection.msgtype}): {exc}")
                     continue
