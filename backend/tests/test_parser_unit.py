@@ -344,18 +344,10 @@ class TestParseDb3UndeclaredTopic:
 
     def _patch_rosbags(self, monkeypatch, connections, messages):
         import rosbags.rosbag2 as rosbag2_mod
-        import rosbags.serde as serde_mod
 
         _FakeReader._connections = connections
         _FakeReader._messages = messages
         monkeypatch.setattr(rosbag2_mod, "Reader", _FakeReader)
-        # `_parse_db3` does `from rosbags.serde import deserialize_cdr` at the top;
-        # the installed rosbags build doesn't export that name, so inject a stub
-        # (raising=False creates it) to keep the import from failing. The test
-        # topics are non-decode topics, so this stub is never actually called.
-        monkeypatch.setattr(
-            serde_mod, "deserialize_cdr", lambda *a, **k: object(), raising=False
-        )
 
     def test_undeclared_topic_message_does_not_raise(self, monkeypatch):
         # One declared topic in the catalog ...

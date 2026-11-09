@@ -561,7 +561,7 @@ requires-dist = [
     { name = "mcap-protobuf-support", specifier = ">=0.3.0" },
     { name = "mcap-ros1-support", specifier = ">=0.5.0" },
     { name = "mcap-ros2-support", specifier = ">=0.5.5" },
-    { name = "mcp", specifier = ">=1.0.0" },
+    { name = "mcp", specifier = ">=1.0.0,<2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13.0" },
     { name = "neo4j", specifier = ">=5.27.0" },
     { name = "openai", marker = "extra == 'ai'", specifier = ">=1.55.0" },

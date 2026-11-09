@@ -130,6 +130,24 @@ function normalizeSession(r: RawSession): SessionMeta {
   };
 }
 
+// The bag parser reports ROS log levels (warn/error/fatal) but the timeline draws
+// warning/critical. Error and fatal logs are also what the backend counts as
+// anomalies, so they belong in that lane rather than among ordinary log lines.
+function normalizeTimelineEvent(e: RawTimeline): TimelineEvent {
+  const isFailure = e.sev === "error" || e.sev === "fatal";
+  return {
+    t: e.t,
+    type: (isFailure ? "anomaly" : e.type) as TimelineEvent["type"],
+    sev: (isFailure
+      ? "critical"
+      : e.sev === "warn"
+        ? "warning"
+        : e.sev) as TimelineEvent["sev"],
+    topic: e.topic,
+    label: e.label,
+  };
+}
+
 // ── Public API ────────────────────────────────────────────────────────
 
 export async function createSession(
@@ -145,13 +163,7 @@ export async function getSession(id: string): Promise<SessionMeta> {
 
 export async function getTimeline(id: string): Promise<TimelineEvent[]> {
   const raw = await get<RawTimeline[]>(`/api/sessions/${id}/timeline`);
-  return raw.map((e) => ({
-    t: e.t,
-    type: e.type as TimelineEvent["type"],
-    sev: e.sev as TimelineEvent["sev"],
-    topic: e.topic,
-    label: e.label,
-  }));
+  return raw.map(normalizeTimelineEvent);
 }
 
 export async function getTopics(id: string): Promise<TopicInfo[]> {

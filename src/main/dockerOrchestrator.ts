@@ -271,6 +271,11 @@ class DockerOrchestrator {
     return { hostDir, containerDir };
   }
 
+  /** The one host folder containers can read bags from (see getBagMount). */
+  public getBagRoot(): string {
+    return this.getBagMount().hostDir;
+  }
+
   public getStatus(): DockerStatus {
     return this.status;
   }
@@ -700,6 +705,9 @@ class DockerOrchestrator {
           "NEO4J_AUTH=neo4j/datapilot-local",
           'NEO4J_PLUGINS=["apoc"]',
           "NEO4J_dbms_security_procedures_unrestricted=apoc.*",
+          // Same as docker-compose.yml: send nothing to Neo4j Inc.
+          "NEO4J_dbms_usage__report_enabled=false",
+          "NEO4J_server_bolt_telemetry_enabled=false",
         ],
         HostConfig: {
           PortBindings: {
@@ -736,7 +744,7 @@ class DockerOrchestrator {
         step: "Starting MCAP Parser service…",
       });
       await this.startContainer("mcap-parser", {
-        Image: this.resolveImageTag("ghcr.io/rahulkatiyar19955/datapilot-mcap-parser:latest"),
+        Image: this.resolveImageTag("ghcr.io/bringup-labs/datapilot-mcap-parser:latest"),
         Env: ["DATAPILOT_HOST_MOUNT=/host"],
         HostConfig: {
           Binds: [bagBind],
@@ -772,7 +780,7 @@ class DockerOrchestrator {
       ];
 
       await this.startContainer("backend", {
-        Image: this.resolveImageTag("ghcr.io/rahulkatiyar19955/datapilot-backend:latest"),
+        Image: this.resolveImageTag("ghcr.io/bringup-labs/datapilot-backend:latest"),
         Env: backendEnv,
         HostConfig: {
           PortBindings: {
@@ -784,6 +792,9 @@ class DockerOrchestrator {
             // Read-only secret file (#39/#32).
             `${secretsHostPath}:${DockerOrchestrator.SECRETS_CONTAINER_PATH}:ro`,
           ],
+          // Docker Engine on Linux has no host.docker.internal by default, and
+          // the backend reaches Ollama on the host through that name.
+          ExtraHosts: ["host.docker.internal:host-gateway"],
           NetworkMode: "datapilot-net",
         },
       });
@@ -820,31 +831,31 @@ class DockerOrchestrator {
       const workers = [
         {
           name: "rosbag-reader",
-          image: this.resolveImageTag("ghcr.io/rahulkatiyar19955/datapilot-mcp-rosbag-reader:latest"),
+          image: this.resolveImageTag("ghcr.io/bringup-labs/datapilot-mcp-rosbag-reader:latest"),
           binds: [bagBind],
           env: ["DATAPILOT_HOST_MOUNT=/host", ...neo4jEnv],
         },
         {
           name: "trajectory-analyzer",
-          image: this.resolveImageTag("ghcr.io/rahulkatiyar19955/datapilot-mcp-trajectory-analyzer:latest"),
+          image: this.resolveImageTag("ghcr.io/bringup-labs/datapilot-mcp-trajectory-analyzer:latest"),
           binds: [bagBind],
           env: ["DATAPILOT_HOST_MOUNT=/host", ...neo4jEnv],
         },
         {
           name: "planner-failure-inspector",
-          image: this.resolveImageTag("ghcr.io/rahulkatiyar19955/datapilot-mcp-planner-failure-inspector:latest"),
+          image: this.resolveImageTag("ghcr.io/bringup-labs/datapilot-mcp-planner-failure-inspector:latest"),
           binds: [],
           env: [...neo4jEnv],
         },
         {
           name: "anomaly-detector",
-          image: this.resolveImageTag("ghcr.io/rahulkatiyar19955/datapilot-mcp-anomaly-detector:latest"),
+          image: this.resolveImageTag("ghcr.io/bringup-labs/datapilot-mcp-anomaly-detector:latest"),
           binds: [bagBind],
           env: ["DATAPILOT_HOST_MOUNT=/host", ...neo4jEnv],
         },
         {
           name: "report-composer",
-          image: this.resolveImageTag("ghcr.io/rahulkatiyar19955/datapilot-mcp-report-composer:latest"),
+          image: this.resolveImageTag("ghcr.io/bringup-labs/datapilot-mcp-report-composer:latest"),
           binds: [],
           env: [...neo4jEnv],
         },

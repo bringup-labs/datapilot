@@ -4,7 +4,7 @@
   "private": true,
   "description": "AI-powered copilot for debugging ROS 2 robots locally",
   "author": "DataPilot",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "main": "out/main/index.js",
   "type": "module",
   "scripts": {

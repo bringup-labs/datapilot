@@ -142,6 +142,24 @@ describe("JSON helpers", () => {
       ]);
     });
 
+    it("getTimeline makes failures in a real bag stand out", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse([
+          { t: 1, type: "log", sev: "info", topic: "/rosout", label: "ok" },
+          { t: 2, type: "log", sev: "warn", topic: "/rosout", label: "warn" },
+          { t: 3, type: "log", sev: "error", topic: "/rosout", label: "error" },
+          { t: 4, type: "log", sev: "fatal", topic: "/rosout", label: "fatal" },
+        ]),
+      );
+      const events = await getTimeline("s1");
+      expect(events.map((e) => [e.type, e.sev])).toEqual([
+        ["log", "info"],
+        ["log", "warning"],
+        ["anomaly", "critical"],
+        ["anomaly", "critical"],
+      ]);
+    });
+
     it("getTopics fills hz/msgs defaults", async () => {
       fetchMock.mockResolvedValue(
         jsonResponse([{ name: "/odom", type: "nav_msgs/Odometry" }]),

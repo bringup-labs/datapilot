@@ -47,7 +47,11 @@ const STORAGE_USAGE_MAX_ENTRIES = 200_000;
 // Active log-stream unsubscribe callbacks, keyed by per-renderer subscription id.
 const activeLogStreams = new Map<string, () => void>();
 
-const settingsPath = path.join(app.getPath("userData"), "settings.json");
+// Resolved per call, not at import time: index.ts redirects `userData` to a
+// separate dev profile after this module has already been evaluated.
+function getSettingsPath(): string {
+  return path.join(app.getPath("userData"), "settings.json");
+}
 
 // Simple file-backed settings store.
 //
@@ -56,6 +60,7 @@ const settingsPath = path.join(app.getPath("userData"), "settings.json");
 // overwrite a partially-recoverable file (including encrypted API keys) with
 // just the one key the caller is setting — irreversible data loss.
 function readSettings(): Record<string, string> {
+  const settingsPath = getSettingsPath();
   if (!fs.existsSync(settingsPath)) return {};
   try {
     return JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
@@ -74,6 +79,7 @@ function readSettings(): Record<string, string> {
 // renderer (e.g. keychain:set, #51) check the result instead of assuming the
 // write succeeded.
 function writeSettings(settings: Record<string, string>): boolean {
+  const settingsPath = getSettingsPath();
   try {
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     // This file holds the safeStorage-encrypted `secure_*` API-key blobs, so it
@@ -91,6 +97,19 @@ function writeSettings(settings: Record<string, string>): boolean {
     return true;
   } catch (err) {
     console.error("Failed to write settings:", err);
+    return false;
+  }
+}
+
+/** True when `file` resolves to somewhere inside `folder`, following symlinks. */
+function isInsideFolder(file: string, folder: string): boolean {
+  try {
+    return isPathWithinRoot(
+      fs.realpathSync(file),
+      fs.realpathSync(folder),
+      path.sep,
+    );
+  } catch {
     return false;
   }
 }
@@ -270,13 +289,15 @@ export function registerIpcHandlers(): void {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return null;
 
+    const bagRoot = dockerOrchestrator.getBagRoot();
     const result = await dialog.showOpenDialog(win, {
       title: "Select ROS Bag File",
+      defaultPath: bagRoot,
       properties: ["openFile"],
       filters: [
         {
-          name: "ROS Bags (*.mcap, *.db3, *.bag)",
-          extensions: ["mcap", "db3", "bag"],
+          name: "ROS 2 Bags (*.mcap, *.db3)",
+          extensions: ["mcap", "db3"],
         },
         { name: "All Files", extensions: ["*"] },
       ],
@@ -285,7 +306,29 @@ export function registerIpcHandlers(): void {
     if (result.canceled || result.filePaths.length === 0) {
       return null;
     }
-    return result.filePaths[0];
+
+    const selected = result.filePaths[0];
+    if (isInsideFolder(selected, bagRoot)) {
+      return selected;
+    }
+
+    // Containers can only read the bag folder (#33). Loading anything else would
+    // produce an empty session that still reports itself as parsed.
+    const { response } = await dialog.showMessageBox(win, {
+      type: "info",
+      message: "This bag is outside DataPilot's bag folder",
+      detail:
+        `DataPilot only reads bags from ${bagRoot}, which keeps the rest of ` +
+        `your files out of reach of its containers. Move or copy ` +
+        `${path.basename(selected)} there, then load it again.`,
+      buttons: ["Open bag folder", "Cancel"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response === 0) {
+      await shell.openPath(bagRoot);
+    }
+    return null;
   });
 
   // Theme support
