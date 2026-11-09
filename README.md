@@ -20,6 +20,14 @@
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache_2.0-blue"></a>
 </p>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="mock_design/datapilot_ui_mockup_dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="mock_design/datapilot_ui_mockup_light.png">
+    <img alt="DataPilot UI mockup: the Copilot answers why a robot stopped near a loading bay with an analysis plan and critical findings, next to a timeline of the anomalies and the bag's topics" src="mock_design/datapilot_ui_mockup_dark.png" width="100%">
+  </picture>
+</p>
+
 When a robot misbehaves, the evidence is buried in a bag file: thousands of log lines, diagnostics and sensor topics from dozens of nodes. DataPilot indexes the bag on your computer and lets you ask about it in plain language. Specialist AI agents trace the failure through the data and answer with the chain of events, timestamps, and the exact lines they relied on.
 
 ## Quick start
