@@ -4,6 +4,7 @@ The older tests in test_parser_unit.py stub out rosbags. That hid the fact that
 rosbags 0.11 removed the function the parsers imported, so no .db3 bag could be
 read at all. These tests use the library for real.
 """
+import logging
 import sys
 from pathlib import Path
 
@@ -11,9 +12,11 @@ import pytest
 from rosbags.rosbag2 import Writer
 from rosbags.typesys import Stores, get_typestore
 
+from app.services import tf_parser as backend_tf_parser
 from app.services.parser import ingestion_parser
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import mcap_parser.parser as parser_service_module  # noqa: E402
 from mcap_parser.parser import parse_bag as parser_service_parse  # noqa: E402
 
 START_NS = 1_773_480_413_000_000_000
@@ -105,3 +108,63 @@ def test_counts_messages_on_every_topic_including_undecoded_ones(db3_bag: Path, 
     counts = {topic["name"]: topic["msgs"] for topic in result["topics"]}
     assert counts == {"/rosout": 2, "/diagnostics": 1, "/chatter": 1}
     assert result["duration_seconds"] == pytest.approx(4.0)
+
+
+def _write_tf_bag(bag_dir: Path, parent: str, child: str) -> Path:
+    """A bag holding one /tf message that attaches `child` to `parent`."""
+    typestore = get_typestore(Stores.ROS2_HUMBLE)
+    types = typestore.types
+    TFMessage = types["tf2_msgs/msg/TFMessage"]
+    transform = types["geometry_msgs/msg/TransformStamped"](
+        header=types["std_msgs/msg/Header"](
+            stamp=types["builtin_interfaces/msg/Time"](sec=START_NS // 10**9, nanosec=0),
+            frame_id=parent,
+        ),
+        child_frame_id=child,
+        transform=types["geometry_msgs/msg/Transform"](
+            translation=types["geometry_msgs/msg/Vector3"](x=0.0, y=0.0, z=0.0),
+            rotation=types["geometry_msgs/msg/Quaternion"](x=0.0, y=0.0, z=0.0, w=1.0),
+        ),
+    )
+    with Writer(bag_dir, version=8) as writer:
+        tf = writer.add_connection("/tf", TFMessage.__msgtype__, typestore=typestore)
+        writer.write(
+            tf,
+            START_NS,
+            typestore.serialize_cdr(TFMessage(transforms=[transform]), TFMessage.__msgtype__),
+        )
+    return next(bag_dir.glob("*.db3"))
+
+
+def test_frames_come_only_from_the_bag_being_parsed(tmp_path: Path, parse) -> None:
+    # The backend's inline parser used to keep one TF parser for every bag, so
+    # each bag's frame tree also held the frames of every bag parsed before it.
+    parse(str(_write_tf_bag(tmp_path / "first", "odom", "base_link")))
+    result = parse(str(_write_tf_bag(tmp_path / "second", "map", "odom")))
+
+    assert result["frames"] == [{"name": "odom", "parent": "map"}]
+
+
+def _unreadable_transform(transform):
+    raise AttributeError("not a transform")
+
+
+def test_parser_service_warns_about_unreadable_tf_transforms(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(parser_service_module, "_frame_pair", _unreadable_transform, raising=False)
+
+    result = parser_service_parse(str(_write_tf_bag(tmp_path / "bag", "odom", "base_link")))
+
+    assert result["frames"] == []
+    assert any(w.startswith("Skipped 1 TF transform") for w in result["parse_warnings"])
+
+
+def test_backend_parser_logs_unreadable_tf_transforms(tmp_path: Path, monkeypatch, caplog) -> None:
+    monkeypatch.setattr(backend_tf_parser, "_frame_pair", _unreadable_transform, raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="app.services.parser"):
+        result = ingestion_parser._parse_db3(
+            str(_write_tf_bag(tmp_path / "bag", "odom", "base_link"))
+        )
+
+    assert result["frames"] == []
+    assert any("Skipped 1 TF transform" in r.getMessage() for r in caplog.records)

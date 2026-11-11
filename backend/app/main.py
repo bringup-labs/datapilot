@@ -9,12 +9,15 @@ from __future__ import annotations
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.version import __version__
 from app.auth import APITokenMiddleware
+from app.services.causal_rules import causal_rules_evaluator
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +96,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="DataPilot Backend",
-    version="0.1.0",
+    version=__version__,
     description="Local-first ROS 2 debugging copilot — FastAPI + LangGraph.",
     lifespan=lifespan,
 )
@@ -137,11 +140,21 @@ app.router.routes.append(Route("/mcp", endpoint=MCPEndpoint(), include_in_schema
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    """Liveness probe. The Electron orchestrator polls this on stack boot."""
-    return {"status": "ok", "phase": "3", "service": "datapilot-backend"}
+async def health() -> dict[str, Any]:
+    """Liveness probe. The Electron orchestrator polls this on stack boot.
+
+    `causal_rules` says how many causal rules loaded, and why none did if so:
+    the backend still runs without them, but builds no causal chains (#89).
+    Only a reason code is returned here; the details are in the error log.
+    """
+    return {
+        "status": "ok",
+        "phase": "3",
+        "service": "datapilot-backend",
+        "causal_rules": causal_rules_evaluator.status(),
+    }
 
 
 @app.get("/")
 async def root() -> dict[str, str]:
-    return {"name": "DataPilot Backend", "version": "0.1.0", "docs": "/docs"}
+    return {"name": "DataPilot Backend", "version": __version__, "docs": "/docs"}

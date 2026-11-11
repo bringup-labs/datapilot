@@ -10,6 +10,7 @@ Covers:
 """
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 
 import pytest
@@ -74,6 +75,12 @@ class TestLogTimeToSeconds:
         # Plural "N days," prefix (issue #70). 2*86400 + 3*3600 + 4*60 + 5.
         assert log_time_to_seconds("2 days, 3:04:05.000000") == pytest.approx(183845.0)
 
+    def test_unparseable_time_is_logged_at_debug(self, caplog):
+        # The 0.0 fallback used to be silent (#89).
+        with caplog.at_level(logging.DEBUG, logger="app.services.causal_rules"):
+            assert log_time_to_seconds("not-a-time") == 0.0
+        assert any("not-a-time" in r.getMessage() for r in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # Rule loading
@@ -96,6 +103,50 @@ class TestRuleLoading:
             assert "cause" in rule
             assert "effect" in rule
             assert "id" in rule
+
+    def test_shipped_rules_load_without_error(self):
+        assert causal_rules_evaluator.status()["error"] is None
+
+    def test_valid_rules_file_reports_its_rule_count(self, tmp_path):
+        path = tmp_path / "causal.yaml"
+        path.write_text(
+            "rules:\n"
+            "  - {id: a, cause: {}, effect: {}}\n"
+            "  - {id: b, cause: {}, effect: {}}\n"
+        )
+        ev = CausalRulesEvaluator(rules_path=str(path))
+        assert [r["id"] for r in ev.rules] == ["a", "b"]
+        assert ev.status() == {"loaded": 2, "error": None}
+
+    def test_missing_rules_file_is_logged_as_an_error(self, tmp_path, caplog):
+        # Used to be a print() to stdout, leaving causal chains empty with no
+        # visible error (#89).
+        path = tmp_path / "causal.yaml"
+        with caplog.at_level(logging.ERROR, logger="app.services.causal_rules"):
+            ev = CausalRulesEvaluator(rules_path=str(path))
+        assert ev.rules == []
+        assert ev.status() == {"loaded": 0, "error": "missing"}
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        assert any(str(path) in message for message in errors)
+
+    @pytest.mark.parametrize(
+        "text, error",
+        [
+            ("rules: [unclosed\n", "unreadable"),
+            ("rules: 5\n", "invalid"),
+            ("- {id: not_under_rules}\n", "invalid"),
+            ("", "invalid"),
+        ],
+        ids=["broken-yaml", "rules-not-a-list", "no-rules-key", "empty-file"],
+    )
+    def test_bad_rules_file_is_logged_as_an_error(self, tmp_path, caplog, text, error):
+        path = tmp_path / "causal.yaml"
+        path.write_text(text)
+        with caplog.at_level(logging.ERROR, logger="app.services.causal_rules"):
+            ev = CausalRulesEvaluator(rules_path=str(path))
+        assert ev.rules == []
+        assert ev.status() == {"loaded": 0, "error": error}
+        assert any(r.levelno == logging.ERROR for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

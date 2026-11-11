@@ -14,7 +14,7 @@ from mcp.server.fastmcp import FastMCP
 
 from app.agent.tools import format_causal_chain
 
-from mcp_workers._shared.health import start_health_server
+from mcp_workers._shared.health import start_health_server, tool_counter
 from mcp_workers._shared.wrap_tool import register_tool
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ def main() -> None:
     import time
 
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-    start_health_server(WORKER_NAME, HEALTH_PORT, lambda: 1)
+    start_health_server(WORKER_NAME, HEALTH_PORT, tool_counter(mcp))
     logger.info("%s MCP server ready (health on :%d)", WORKER_NAME, HEALTH_PORT)
     try:
         mcp.run()

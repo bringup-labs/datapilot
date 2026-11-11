@@ -31,6 +31,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app.version import __version__
+
 logger = logging.getLogger(__name__)
 
 # Worker name → Python module path to launch.
@@ -90,7 +92,7 @@ class WorkerHandle:
         self._send_request("initialize", {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {"name": "datapilot-backend", "version": "0.1.0"},
+            "clientInfo": {"name": "datapilot-backend", "version": __version__},
         })
         self._initialized = True
 

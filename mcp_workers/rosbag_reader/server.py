@@ -1,7 +1,7 @@
 """
 `rosbag_reader` MCP worker.
 
-Wraps `app.agent.tools.{retrieve_logs, read_tf_chain, read_diagnostics}`.
+Wraps `app.agent.tools.{retrieve_logs, read_tf_chain, read_diagnostics, query_mcap}`.
 Exposes:
   - stdio JSON-RPC (the primary MCP transport `mcp_client._dispatch_stdio` uses)
   - HTTP `/health` on port 9001 (the Agents & MCP screen polls this)
@@ -20,7 +20,7 @@ from app.agent.tools import retrieve_logs, read_tf_chain
 from app.agent.tools import read_diagnostics
 from app.agent.tools import query_mcap
 
-from mcp_workers._shared.health import start_health_server
+from mcp_workers._shared.health import start_health_server, tool_counter
 from mcp_workers._shared.wrap_tool import register_tool
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ def main() -> None:
     import time
 
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-    start_health_server(WORKER_NAME, HEALTH_PORT, lambda: 3)
+    start_health_server(WORKER_NAME, HEALTH_PORT, tool_counter(mcp))
     logger.info("%s MCP server ready (health on :%d)", WORKER_NAME, HEALTH_PORT)
     try:
         mcp.run()  # blocks on stdin; returns when stdin closes (no client)

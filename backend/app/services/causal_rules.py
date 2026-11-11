@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import yaml
@@ -6,6 +7,13 @@ from typing import List, Dict, Any
 
 from app.config import settings
 
+logger = logging.getLogger(__name__)
+
+# app/rules/causal.yaml, shipped with the backend.
+RULES_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "rules", "causal.yaml"
+)
+
 def log_time_to_seconds(t_str: str) -> float:
     """Convert a ``str(timedelta)`` display string to float seconds.
 
@@ -13,7 +21,7 @@ def log_time_to_seconds(t_str: str) -> float:
     ``"N day[s], H:MM:SS"`` form that ``str(timedelta)`` emits once a duration
     crosses 24h (issue #70 — without the day handling, long bags silently
     collapsed every timestamp to 0.0). Bare numeric strings fall through to
-    ``float()``; anything unparseable yields 0.0.
+    ``float()``; anything unparseable yields 0.0, logged at debug level.
     """
     try:
         s = t_str.strip()
@@ -27,32 +35,51 @@ def log_time_to_seconds(t_str: str) -> float:
         if len(parts) == 3:
             h, m, sec = parts
             return days * 86400.0 + float(h) * 3600.0 + float(m) * 60.0 + float(sec)
-    except Exception:
-        pass
+    except (AttributeError, IndexError, ValueError):
+        pass  # not a display string; try it as a plain number below
     try:
         # Fallback if float is passed as string
         return float(t_str)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
+        logger.debug("Unparseable log time %r, using 0.0", t_str)
         return 0.0
 
 class CausalRulesEvaluator:
-    def __init__(self):
-        self.rules = []
+    def __init__(self, rules_path: str = RULES_PATH):
+        self.rules_path = rules_path
+        self.rules: List[Dict[str, Any]] = []
+        # Why no rules loaded ("missing", "unreadable" or "invalid"), or None.
+        # /health reports it, since ingestion without rules builds no causal
+        # chains (#89).
+        self.load_error: str | None = None
         self._load_rules()
 
-    def _load_rules(self):
-        # Look for causal.yaml in app/rules/
-        current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        yaml_path = os.path.join(current_dir, "rules", "causal.yaml")
-        if os.path.exists(yaml_path):
-            try:
-                with open(yaml_path, "r") as f:
-                    data = yaml.safe_load(f)
-                    self.rules = data.get("rules", [])
-            except Exception as e:
-                print(f"Error loading causal.yaml: {e}")
-        else:
-            print(f"causal.yaml not found at {yaml_path}")
+    def _load_rules(self) -> None:
+        try:
+            with open(self.rules_path, "r") as f:
+                data = yaml.safe_load(f)
+        except FileNotFoundError:
+            self._rules_not_loaded("missing", "%s doesn't exist", self.rules_path)
+            return
+        except (OSError, yaml.YAMLError) as exc:
+            self._rules_not_loaded("unreadable", "couldn't read %s: %s", self.rules_path, exc)
+            return
+        rules = data.get("rules") if isinstance(data, dict) else None
+        if not isinstance(rules, list):
+            self._rules_not_loaded("invalid", "%s has no list of rules under `rules:`", self.rules_path)
+            return
+        self.rules = rules
+
+    def _rules_not_loaded(self, reason: str, detail: str, *args: Any) -> None:
+        self.load_error = reason
+        logger.error(
+            "Causal rules not loaded, so ingestion will build no CAUSED or TRIGGERED edges: " + detail,
+            *args,
+        )
+
+    def status(self) -> Dict[str, Any]:
+        """How many rules loaded and, if none did, why. Reported on /health."""
+        return {"loaded": len(self.rules), "error": self.load_error}
 
     def _matches_condition(self, log: Dict[str, Any], cond: Dict[str, Any]) -> bool:
         # Match severity (case-insensitive list comparison)

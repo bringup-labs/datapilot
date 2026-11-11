@@ -62,6 +62,15 @@ def _extract_sensor_info(topic_name: str, msg_type: str) -> dict[str, str] | Non
 
 logger = logging.getLogger(__name__)
 
+
+class BagParseError(Exception):
+    """The mcap-parser service read the bag but couldn't parse it (#86).
+
+    Raised instead of falling back to the inline parser, which would only
+    repeat the failure. run_ingestion then marks the session as failed.
+    """
+
+
 # The Docker container mounts the host home directory at this path (read-only).
 # Set via the DATAPILOT_HOST_MOUNT env var in dockerOrchestrator.ts.
 _HOST_MOUNT = os.environ.get("DATAPILOT_HOST_MOUNT", "")
@@ -411,10 +420,17 @@ def _derive_anomalies(timeline_events: List[Dict[str, Any]], logs: List[Dict[str
     return anomalies
 
 
-class IngestionParser:
-    def __init__(self):
-        self.tf_parser = TFParser()
+def _warn_about_skipped_transforms(tf_parser: TFParser, filepath: str) -> None:
+    """Log how many of a bag's TF transforms couldn't be read (#89)."""
+    if tf_parser.skipped:
+        logger.warning(
+            "Skipped %d TF transform(s) in %s that couldn't be read, so the frame tree may be incomplete",
+            tf_parser.skipped,
+            os.path.basename(filepath),
+        )
 
+
+class IngestionParser:
     async def parse_bag(self, filepath: str) -> Dict[str, Any]:
         """
         Parses a ROS bag file (.mcap or .db3).
@@ -422,6 +438,7 @@ class IngestionParser:
         Tries the dedicated mcap-parser service first (multi-encoding support,
         including Foxglove protobuf). Falls back to the inline CDR-only parser
         when the service is unreachable (e.g. during tests or on first boot).
+        Raises BagParseError when the service reports the bag can't be parsed.
 
         If the filename matches a demo dataset, returns the mock data directly.
         """
@@ -539,8 +556,10 @@ class IngestionParser:
     async def _parse_via_service(self, resolved_filepath: str) -> Dict[str, Any] | None:
         """POST the resolved file path to the mcap-parser service.
 
-        Returns the parsed dict on success, None if the service is unavailable
-        or returns an error (so the caller can fall back to inline parsing).
+        Returns the parsed dict on success. Raises BagParseError when the
+        service answers with a `parse_error`. Returns None for anything else,
+        such as the service being unreachable or rejecting the path, so the
+        caller falls back to inline parsing.
         """
         import httpx
         service_url = os.environ.get("MCAP_PARSER_URL", "http://datapilot-mcap-parser:8100")
@@ -550,21 +569,30 @@ class IngestionParser:
                     f"{service_url}/parse",
                     json={"filepath": resolved_filepath},
                 )
-                resp.raise_for_status()
-                data = resp.json()
-                if not data.get("ok", True):  # service returned an error envelope
-                    logger.warning(
-                        "mcap-parser returned error for %s: %s",
-                        resolved_filepath, data.get("error"),
-                    )
-                    return None
-                return data
         except Exception as exc:
             logger.warning(
                 "mcap-parser service unavailable (%s) — falling back to inline parser",
                 exc,
             )
             return None
+
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        if resp.is_success and isinstance(data, dict) and data.get("ok", True):
+            return data
+
+        # A typed error is {"code", "message", "retryable"} (#86). An older
+        # parser service sends a bare string with HTTP 200.
+        error = data.get("error") if isinstance(data, dict) else None
+        if isinstance(error, dict) and error.get("code") == "parse_error":
+            raise BagParseError(f"mcap-parser couldn't parse the bag: {error.get('message')}")
+        logger.warning(
+            "mcap-parser returned an error for %s (HTTP %s): %s — falling back to inline parser",
+            resolved_filepath, resp.status_code, error,
+        )
+        return None
 
     def _parse_mcap(self, filepath: str) -> Dict[str, Any]:
         # Inline CDR-only MCAP parser — fallback when mcap-parser service is down.
@@ -574,6 +602,7 @@ class IngestionParser:
         from mcap_ros2.reader import read_ros2_messages
         import json
 
+        tf_parser = TFParser()  # one per bag, so frames don't carry over between bags
         logs = []
         topics_dict = {}
         timeline_events = []
@@ -655,7 +684,7 @@ class IngestionParser:
                     })
 
             elif topic in tf_topics:
-                self.tf_parser.parse_tf_message(msg)
+                tf_parser.parse_tf_message(msg)
 
             elif topic in diag_topics:
                 status_list = getattr(msg, "status", None) or []
@@ -688,6 +717,7 @@ class IngestionParser:
                     })
 
         dur = (end_time - start_time) if start_time and end_time else 0.0
+        _warn_about_skipped_transforms(tf_parser, filepath)
 
         # Compute per-topic Hz from real message counts and bag duration.
         total_messages = 0
@@ -720,7 +750,7 @@ class IngestionParser:
             "logs": logs,
             "anomalies": _derive_anomalies(timeline_events, logs),
             "kgraph": {"nodes": [], "edges": []},
-            "frames": self.tf_parser.get_frames_list(),
+            "frames": tf_parser.get_frames_list(),
             "replay": [],
             "sensors": sensors,
             "diagnostics": diagnostics,
@@ -733,6 +763,7 @@ class IngestionParser:
         import json
 
         typestore = get_typestore(Stores.ROS2_HUMBLE)
+        tf_parser = TFParser()  # one per bag, so frames don't carry over between bags
         logs = []
         topics_dict = {}
         diagnostics = []
@@ -812,7 +843,7 @@ class IngestionParser:
                     })
 
                 elif topic in tf_connections:
-                    self.tf_parser.parse_tf_message(msg)
+                    tf_parser.parse_tf_message(msg)
 
                 elif topic in diag_connections:
                     status_list = getattr(msg, "status", None) or []
@@ -845,6 +876,7 @@ class IngestionParser:
                         })
 
         dur = (end_time - start_time) if start_time and end_time else 0.0
+        _warn_about_skipped_transforms(tf_parser, filepath)
 
         # Compute per-topic Hz and total bag message count from real data.
         total_messages = 0
@@ -877,7 +909,7 @@ class IngestionParser:
             "logs": logs,
             "anomalies": [],
             "kgraph": {"nodes": [], "edges": []},
-            "frames": self.tf_parser.get_frames_list(),
+            "frames": tf_parser.get_frames_list(),
             "replay": [],
             "sensors": sensors,
             "diagnostics": diagnostics,
