@@ -15,6 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.version import __version__
 from app.auth import APITokenMiddleware
 from app.services.causal_rules import causal_rules_evaluator
 
@@ -95,7 +96,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="DataPilot Backend",
-    version="0.1.0",
+    version=__version__,
     description="Local-first ROS 2 debugging copilot — FastAPI + LangGraph.",
     lifespan=lifespan,
 )
@@ -156,4 +157,4 @@ async def health() -> dict[str, Any]:
 
 @app.get("/")
 async def root() -> dict[str, str]:
-    return {"name": "DataPilot Backend", "version": "0.1.0", "docs": "/docs"}
+    return {"name": "DataPilot Backend", "version": __version__, "docs": "/docs"}

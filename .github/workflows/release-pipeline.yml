@@ -45,9 +45,16 @@ jobs:
           # Avoid detached HEAD
           git checkout main
           
-          # Bump version (this updates package.json, commits, and creates a tag)
-          pnpm version ${{ inputs.version_type }} -m "Bump version to %s"
-          
+          # Bump package.json without committing yet, copy the new version into
+          # the backend's pyproject.toml and uv.lock (#94), then commit and tag
+          # all three together.
+          pnpm version ${{ inputs.version_type }} --no-git-tag-version
+          VERSION=$(jq -r .version package.json)
+          python3 .github/scripts/sync_backend_version.py
+          git add package.json backend/pyproject.toml backend/uv.lock
+          git commit -m "Bump version to ${VERSION}"
+          git tag -a "v${VERSION}" -m "Bump version to ${VERSION}"
+
           NEW_TAG=$(git describe --tags --abbrev=0)
           echo "new_tag=${NEW_TAG}" >> $GITHUB_OUTPUT
           
