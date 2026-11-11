@@ -1,14 +1,22 @@
 """Unit coverage for app.services.tf_parser.TFParser.
 
 Covers TF frame extraction from both object-attribute and dict message shapes,
-slash-prefix cleanup, accumulation across calls, and the bare-except swallow
-behavior (malformed messages are silently ignored rather than raising).
+slash-prefix cleanup, accumulation across calls, and unreadable transforms:
+they're skipped and counted, in this parser and in the parser service's copy,
+while unexpected errors propagate (#89).
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.tf_parser import TFParser
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from mcap_parser.parser import _TFParser as ServiceTFParser  # noqa: E402
 
 
 def _obj_transform(child, parent):
@@ -118,11 +126,56 @@ class TestEdgeAndErrorPaths:
         p.parse_tf_message(SimpleNamespace(foo="bar"))
         assert p.frames == {}
 
-    def test_bare_except_swallows_malformed_transform(self):
-        # NOTE: parse_tf_message wraps its body in `except Exception: pass`,
-        # so a transform whose `header` attribute access raises is silently
-        # swallowed — the parser never propagates the error. We characterize
-        # that behavior here: no exception, and frames stays empty.
+    def test_none_message_is_ignored(self):
+        p = TFParser()
+        # getattr(None, 'transforms', None) -> None ; isinstance(None, dict) False.
+        p.parse_tf_message(None)
+        assert p.frames == {}
+
+
+@pytest.fixture(params=["backend", "mcap-parser-service"])
+def tf(request):
+    """(parser, parse function) for the backend's TFParser and the service's copy."""
+    if request.param == "backend":
+        parser = TFParser()
+        return parser, parser.parse_tf_message
+    parser = ServiceTFParser()
+    return parser, parser.parse
+
+
+class TestUnreadableTransforms:
+    """Unreadable transforms are skipped and counted, not silently dropped (#89)."""
+
+    def test_bad_transform_is_skipped_without_losing_the_rest(self, tf):
+        parser, parse = tf
+        parse(SimpleNamespace(transforms=[
+            _obj_transform("base_link", "odom"),
+            _obj_transform(5, "odom"),  # the child id isn't a string
+            _obj_transform("laser_link", "base_link"),
+        ]))
+        assert parser.frames == {"base_link": "odom", "laser_link": "base_link"}
+        assert parser.skipped == 1
+
+    def test_dict_transform_whose_header_is_not_a_dict_is_skipped(self, tf):
+        parser, parse = tf
+        parse({"transforms": [{"child_frame_id": "base_link", "header": "odom"}]})
+        assert parser.frames == {}
+        assert parser.skipped == 1
+
+    def test_transforms_that_are_not_a_list_count_as_skipped(self, tf):
+        parser, parse = tf
+        parse(SimpleNamespace(transforms=123))
+        assert parser.frames == {}
+        assert parser.skipped == 1
+
+    def test_readable_and_empty_messages_skip_nothing(self, tf):
+        parser, parse = tf
+        parse(SimpleNamespace(transforms=[_obj_transform("base_link", "odom")]))
+        parse(SimpleNamespace(transforms=[]))
+        parse(None)
+        assert parser.skipped == 0
+
+    def test_unexpected_errors_are_not_swallowed(self, tf):
         class Exploding:
             child_frame_id = "base_link"
 
@@ -130,19 +183,6 @@ class TestEdgeAndErrorPaths:
             def header(self):  # noqa: D401 - intentionally raises on access
                 raise RuntimeError("boom")
 
-        p = TFParser()
-        # Must not raise despite the exploding property.
-        p.parse_tf_message(SimpleNamespace(transforms=[Exploding()]))
-        assert p.frames == {}
-
-    def test_bare_except_swallows_non_iterable_transforms(self):
-        # transforms is a non-iterable int → iterating raises → swallowed.
-        p = TFParser()
-        p.parse_tf_message(SimpleNamespace(transforms=123))
-        assert p.frames == {}
-
-    def test_none_message_is_swallowed(self):
-        p = TFParser()
-        # getattr(None, 'transforms', []) -> [] ; isinstance(None, dict) False.
-        p.parse_tf_message(None)
-        assert p.frames == {}
+        _parser, parse = tf
+        with pytest.raises(RuntimeError, match="boom"):
+            parse(SimpleNamespace(transforms=[Exploding()]))
