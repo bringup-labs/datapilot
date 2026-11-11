@@ -5,6 +5,9 @@ Endpoints
 ---------
 GET  /health  → {"status": "ok"}
 POST /parse   → {"filepath": "/host/..."} → parsed session dict
+
+A failed /parse returns {"ok": false, "error": {"code", "message", "retryable"}}
+with HTTP 400 (code "invalid_path") or 422 (code "parse_error").
 """
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from mcap_parser.parser import parse_bag
@@ -87,8 +91,19 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/parse")
-def parse(req: ParseRequest) -> dict[str, Any]:
+def _error(status_code: int, code: str, message: str) -> JSONResponse:
+    """A failed /parse: the typed error envelope, with a non-2xx status (#86).
+
+    Neither failure is retryable: the same request gets the same result.
+    """
+    return JSONResponse(
+        status_code=status_code,
+        content={"ok": False, "error": {"code": code, "message": message, "retryable": False}},
+    )
+
+
+@app.post("/parse", response_model=None)
+def parse(req: ParseRequest) -> dict[str, Any] | JSONResponse:
     logger.info("parse request: %s", req.filepath)
     # Containment check (issue #80): validate the untrusted path before opening
     # it. Use a stable, generic error message — do not echo the raw path back in
@@ -97,10 +112,10 @@ def parse(req: ParseRequest) -> dict[str, Any]:
         safe_path = _validate_bag_path(req.filepath)
     except ValueError:
         logger.warning("rejected invalid bag path: %r", req.filepath)
-        return {"ok": False, "error": "invalid bag path"}
+        return _error(400, "invalid_path", "invalid bag path")
     try:
         result = parse_bag(safe_path)
         return result
     except Exception as exc:
         logger.exception("parse failed for validated path")
-        return {"ok": False, "error": str(exc)}
+        return _error(422, "parse_error", str(exc))

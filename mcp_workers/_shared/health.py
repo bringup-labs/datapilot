@@ -10,7 +10,7 @@ import logging
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Callable
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,17 @@ logger = logging.getLogger(__name__)
 # so loopback is sufficient. Operators that genuinely need cross-interface
 # access (e.g. probing from another container) can override via the env var.
 _DEFAULT_HEALTH_HOST = "127.0.0.1"
+
+
+def tool_counter(mcp: Any) -> Callable[[], int]:
+    """A `tool_count_fn` that counts the tools registered on `mcp`, a FastMCP
+    server, each time /health is read. A hardcoded count drifted from the
+    tools a worker actually served (#86).
+
+    FastMCP's public `list_tools()` is async, and /health is served from a
+    plain thread, so this reads the same registry through `_tool_manager`.
+    """
+    return lambda: len(mcp._tool_manager.list_tools())
 
 
 def start_health_server(worker_name: str, port: int, tool_count_fn: Callable[[], int]) -> None:

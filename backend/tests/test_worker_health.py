@@ -10,11 +10,14 @@ immediately (no real socket bind / serve_forever).
 """
 from __future__ import annotations
 
+import asyncio
+import importlib
 import os
 import sys
 import threading
 
 import pytest
+from mcp.server.fastmcp import FastMCP
 
 # `mcp_workers` lives at the repo root, one level above `backend/`.
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -73,3 +76,49 @@ def test_binds_loopback_by_default(capture_bind):
 def test_bind_host_is_overridable_via_env(capture_bind):
     host, _port = capture_bind(DATAPILOT_HEALTH_HOST="0.0.0.0")
     assert host == "0.0.0.0"
+
+
+# ── Reported tool count (#86) ─────────────────────────────────────────────────
+
+WORKERS = [
+    "rosbag_reader",
+    "trajectory_analyzer",
+    "planner_failure_inspector",
+    "anomaly_detector",
+    "report_composer",
+]
+
+
+def test_tool_counter_counts_tools_as_they_are_registered():
+    server = FastMCP("test-worker")
+    count = health_mod.tool_counter(server)
+    assert count() == 0
+
+    server.add_tool(lambda: "ok", name="first")
+    server.add_tool(lambda: "ok", name="second")
+    assert count() == 2
+
+
+class _StopMain(BaseException):
+    """Raised from the stubbed stdio loop so the worker's main() returns."""
+
+
+@pytest.mark.parametrize("worker", WORKERS)
+def test_worker_health_reports_the_tools_it_serves(worker, monkeypatch):
+    # rosbag_reader served 4 tools but its /health said 3: each worker passed
+    # a hardcoded count.
+    server = importlib.import_module(f"mcp_workers.{worker}.server")
+    reported = {}
+    monkeypatch.setattr(
+        server, "start_health_server", lambda name, port, count: reported.update(count=count)
+    )
+
+    def stop(*args, **kwargs):
+        raise _StopMain
+
+    monkeypatch.setattr(server.mcp, "run", stop)
+    with pytest.raises(_StopMain):
+        server.main()
+
+    served = asyncio.run(server.mcp.list_tools())
+    assert reported["count"]() == len(served)
