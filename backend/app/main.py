@@ -14,8 +14,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.auth import APITokenMiddleware
 from app.version import __version__
+from app.auth import APITokenMiddleware
 
 logger = logging.getLogger(__name__)
 
