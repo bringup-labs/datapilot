@@ -1,9 +1,26 @@
 import { create } from "zustand";
 import type { ChatMessage, PlanStep } from "@shared/types";
 
+/**
+ * The latest answer. It lives here, not in the Copilot's components, because a
+ * screen switch unmounts them while the answer keeps streaming into this store.
+ */
+export interface ChatAnswer {
+  /** The assistant message it writes to. */
+  assistantId: string;
+  /** The bag it was asked about; null when none was loaded. */
+  sessionId: string | null;
+  /** Stops it: DataPilot's stream or a Claude Code run. Null once stopped. */
+  handle: { abort(): void } | null;
+}
+
 interface ChatState {
   messages: ChatMessage[];
   streaming: boolean;
+  pendingResend: string | null;
+  /** The bag whose chat is shown; null for the chat without a bag. */
+  sessionId: string | null;
+  answer: ChatAnswer | null;
 
   addMessage: (msg: ChatMessage) => void;
   updateLastMessage: (updater: (m: ChatMessage) => ChatMessage) => void;
@@ -13,13 +30,32 @@ interface ChatState {
   ) => void;
   updatePlanStep: (idx: number, patch: Partial<PlanStep>) => void;
   setStreaming: (streaming: boolean) => void;
+  setAnswer: (answer: ChatAnswer | null) => void;
+  /**
+   * Shows the chat of `sessionId`. Showing the same bag again, as when the
+   * Copilot remounts after a screen switch, keeps the chat; another bag
+   * starts an empty one.
+   */
+  showSession: (sessionId: string | null) => void;
   clearMessages: () => void;
   setMessages: (msgs: ChatMessage[]) => void;
+  requestResend: (question: string) => void;
+  clearResend: () => void;
 }
+
+/**
+ * Replacing the chat detaches the answer in flight: its late events are
+ * dropped, and it no longer counts as streaming. Its run isn't stopped; it
+ * finishes and saves to its own bag.
+ */
+const DETACHED = { answer: null, streaming: false } as const;
 
 export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   streaming: false,
+  pendingResend: null,
+  sessionId: null,
+  answer: null,
 
   addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
 
@@ -62,7 +98,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setStreaming: (streaming) => set({ streaming }),
 
-  clearMessages: () => set({ messages: [] }),
+  setAnswer: (answer) => set({ answer }),
 
-  setMessages: (msgs) => set({ messages: msgs }),
+  showSession: (sessionId) =>
+    set((s) =>
+      s.sessionId === sessionId ? s : { sessionId, messages: [], ...DETACHED },
+    ),
+
+  clearMessages: () => set({ messages: [], ...DETACHED }),
+
+  setMessages: (msgs) => set({ messages: msgs, ...DETACHED }),
+
+  requestResend: (question) => set({ pendingResend: question }),
+
+  clearResend: () => set({ pendingResend: null }),
 }));

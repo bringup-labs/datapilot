@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   IpcValidationError,
   assertSettableKey,
+  assertClaudeCodeAskRequest,
   validateDockerSocket,
   extractBagPathFromArgv,
 } from "./ipcValidation";
@@ -144,5 +145,31 @@ describe("extractBagPathFromArgv (#51)", () => {
     expect(
       extractBagPathFromArgv(["app", undefined as unknown as string, "a.bag"]),
     ).toBe("a.bag");
+  });
+});
+
+describe("claude_code_path", () => {
+  it("is refused from the renderer", () => {
+    expect(() => assertSettableKey("claude_code_path")).toThrow(IpcValidationError);
+  });
+});
+
+describe("assertClaudeCodeAskRequest", () => {
+  it("accepts a valid Claude Code question", () => {
+    expect(
+      assertClaudeCodeAskRequest({ sessionId: "3f1c-9a_b", question: "why?", model: "sonnet", extra: 1 }),
+    ).toEqual({ sessionId: "3f1c-9a_b", question: "why?", model: "sonnet" });
+  });
+
+  it.each([
+    [{ sessionId: "../x", question: "q", model: "" }],
+    [{ sessionId: "s".repeat(129), question: "q", model: "" }],
+    [{ sessionId: "s", question: "   ", model: "" }],
+    [{ sessionId: "s", question: "x".repeat(32_001), model: "" }],
+    [{ sessionId: "s", question: "q", model: "claude-3" }],
+    [null],
+    ["s"],
+  ])("rejects %j", (bad) => {
+    expect(() => assertClaudeCodeAskRequest(bad)).toThrow(IpcValidationError);
   });
 });

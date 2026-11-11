@@ -1,6 +1,8 @@
 import { app, BrowserWindow } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { claudeRunner } from "./claudeCode";
+import { cancelSignIn } from "./claudeCode/auth";
 import { dockerOrchestrator } from "./dockerOrchestrator";
 import { registerIpcHandlers } from "./ipcHandlers";
 import { extractBagPathFromArgv } from "./ipcValidation";
@@ -112,6 +114,9 @@ app.on("before-quit", (e) => {
   if (!isQuitting) {
     e.preventDefault();
     isQuitting = true;
+    // Stop Claude Code runs and any sign-in first, so no child outlives the app.
+    claudeRunner.killAll();
+    cancelSignIn();
     console.log("Teardown triggered. Cleaning up Docker stack...");
     dockerOrchestrator
       .ensureStackDown()

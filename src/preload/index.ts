@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
+  ClaudeCodeChatEvent,
+  ClaudeCodeStatus,
   DatapilotApi,
   DockerStatus,
   KeychainSetResult,
@@ -80,6 +82,36 @@ const api: DatapilotApi = {
   },
   storage: {
     usage: (path) => ipcRenderer.invoke("storage:usage", path),
+  },
+  claudeCode: {
+    status: () =>
+      ipcRenderer.invoke("claudeCode:status") as Promise<ClaudeCodeStatus>,
+    signIn: () =>
+      ipcRenderer.invoke("claudeCode:signIn") as Promise<ClaudeCodeStatus>,
+    chooseBinary: () =>
+      ipcRenderer.invoke("claudeCode:chooseBinary") as Promise<ClaudeCodeStatus>,
+    openInstallGuide: () =>
+      ipcRenderer.invoke("claudeCode:openInstallGuide") as Promise<void>,
+    ask: async (request, onEvent) => {
+      const subId =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `sub_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const channel = `claudeCode:event:${subId}`;
+      const handler = (_event: unknown, e: ClaudeCodeChatEvent) => onEvent(e);
+      // Subscribe before invoking so no early event is missed.
+      ipcRenderer.on(channel, handler);
+      try {
+        await ipcRenderer.invoke("claudeCode:ask", subId, request);
+      } catch (err) {
+        ipcRenderer.removeListener(channel, handler);
+        throw err;
+      }
+      return async () => {
+        ipcRenderer.removeListener(channel, handler);
+        await ipcRenderer.invoke("claudeCode:stop", subId);
+      };
+    },
   },
 };
 

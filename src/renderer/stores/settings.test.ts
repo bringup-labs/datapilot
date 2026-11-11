@@ -336,6 +336,54 @@ describe("useSettingsStore", () => {
     });
   });
 
+  describe("Claude Code settings", () => {
+    it("defaults the Copilot to DataPilot's agents and Claude Code's default model", () => {
+      expect(useSettingsStore.getState()).toMatchObject({
+        copilotEngine: "datapilot",
+        claudeCodeModel: "",
+      });
+    });
+
+    it("reads copilot_engine and claude_code_model, ignoring unknown values", async () => {
+      const { settingsMap } = installDatapilotStub();
+      settingsMap.set("copilot_engine", "claude_code");
+      settingsMap.set("claude_code_model", "opus");
+      await useSettingsStore.getState().loadSettings();
+      expect(useSettingsStore.getState()).toMatchObject({
+        copilotEngine: "claude_code",
+        claudeCodeModel: "opus",
+      });
+      settingsMap.set("copilot_engine", "bogus");
+      settingsMap.set("claude_code_model", "gpt-9");
+      await useSettingsStore.getState().loadSettings();
+      expect(useSettingsStore.getState()).toMatchObject({
+        copilotEngine: "datapilot",
+        claudeCodeModel: "",
+      });
+    });
+
+    it("saves copilotEngine as copilot_engine and claudeCodeModel as claude_code_model", async () => {
+      const { settingsMap } = installDatapilotStub();
+      await useSettingsStore.getState().setSetting("copilotEngine", "claude_code");
+      await useSettingsStore.getState().setSetting("claudeCodeModel", "haiku");
+      expect(settingsMap.get("copilot_engine")).toBe("claude_code");
+      expect(settingsMap.get("claude_code_model")).toBe("haiku");
+    });
+
+    it("reset clears copilot_engine and claude_code_model", async () => {
+      const { settingsMap } = installDatapilotStub();
+      settingsMap.set("copilot_engine", "claude_code");
+      settingsMap.set("claude_code_model", "opus");
+      await useSettingsStore.getState().resetSettings();
+      expect(settingsMap.get("copilot_engine")).toBe("");
+      expect(settingsMap.get("claude_code_model")).toBe("");
+      expect(useSettingsStore.getState()).toMatchObject({
+        copilotEngine: "datapilot",
+        claudeCodeModel: "",
+      });
+    });
+  });
+
   describe("resetSettings", () => {
     it("clears backend sessions, wipes settings + keychain, and reloads defaults", async () => {
       const { settingsMap, keychainMap } = installDatapilotStub();

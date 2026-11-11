@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { FAKE_CLAUDE } from "../test/claude-code/fakeClaude";
 
 const mocks = vi.hoisted(() => ({
   userData: "",
@@ -11,6 +12,21 @@ const mocks = vi.hoisted(() => ({
   showOpenDialog: vi.fn(),
   showMessageBox: vi.fn(),
   openPath: vi.fn(),
+  openExternal: vi.fn(),
+  currentStatus: vi.fn(),
+  runner: {
+    ask: vi.fn(),
+    stop: vi.fn(),
+    killAll: vi.fn(),
+    cleanMode: vi.fn(),
+  },
+  window: {
+    id: 1,
+    isDestroyed: () => false,
+    once: vi.fn(),
+    removeListener: vi.fn(),
+    webContents: { send: vi.fn() },
+  },
 }));
 
 vi.mock("electron", () => ({
@@ -28,11 +44,11 @@ vi.mock("electron", () => ({
     showOpenDialog: mocks.showOpenDialog,
     showMessageBox: mocks.showMessageBox,
   },
-  shell: { openPath: mocks.openPath },
+  shell: { openPath: mocks.openPath, openExternal: mocks.openExternal },
   safeStorage: { isEncryptionAvailable: () => false },
   BrowserWindow: {
     getAllWindows: () => [],
-    fromWebContents: () => ({ id: 1 }),
+    fromWebContents: () => mocks.window,
   },
 }));
 
@@ -41,6 +57,11 @@ vi.mock("./dockerOrchestrator", () => ({
     getStatus: () => ({ state: "pending" }),
     getBagRoot: () => mocks.bagRoot,
   },
+}));
+
+vi.mock("./claudeCode", () => ({
+  claudeRunner: mocks.runner,
+  currentStatus: mocks.currentStatus,
 }));
 
 function tempDir(prefix: string): string {
@@ -170,5 +191,138 @@ describe("file:pickBag", () => {
     mocks.showMessageBox.mockResolvedValue({ response: 1 });
 
     await expect(pick()).resolves.toBeNull();
+  });
+});
+
+describe("Claude Code handlers", () => {
+  const sender = { sender: {} };
+  const status = { install: { state: "missing" }, auth: null, tools: { reachable: false, names: [] }, ready: false };
+
+  function settingsFile(): Record<string, unknown> {
+    const f = path.join(mocks.userData, "settings.json");
+    return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf-8")) : {};
+  }
+
+  beforeEach(async () => {
+    mocks.userData = tempDir("dp-user-");
+    mocks.handlers.clear();
+    mocks.showOpenDialog.mockReset();
+    mocks.openExternal.mockReset();
+    mocks.currentStatus.mockReset().mockResolvedValue(status);
+    mocks.runner.ask.mockReset().mockResolvedValue(undefined);
+    mocks.runner.stop.mockReset().mockResolvedValue(undefined);
+    mocks.window.once.mockReset();
+    mocks.window.removeListener.mockReset();
+    mocks.window.webContents.send.mockReset();
+    vi.resetModules();
+    const { registerIpcHandlers } = await import("./ipcHandlers");
+    registerIpcHandlers();
+  });
+
+  afterEach(() => {
+    fs.rmSync(mocks.userData, { recursive: true, force: true });
+  });
+
+  it("settings:set refuses to point DataPilot at another claude binary", async () => {
+    await expect(
+      mocks.handlers.get("settings:set")!(sender, "claude_code_path", "/tmp/evil"),
+    ).rejects.toThrow();
+    expect(settingsFile()).not.toHaveProperty("claude_code_path");
+  });
+
+  it("status reports the current status for the saved path", async () => {
+    await expect(mocks.handlers.get("claudeCode:status")!(sender)).resolves.toEqual(status);
+    expect(mocks.currentStatus).toHaveBeenCalledWith(null);
+  });
+
+  it("chooseBinary saves a file that reports a Claude Code version", async () => {
+    mocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [FAKE_CLAUDE] });
+    await expect(mocks.handlers.get("claudeCode:chooseBinary")!(sender)).resolves.toEqual(status);
+    expect(settingsFile().claude_code_path).toBe(FAKE_CLAUDE);
+    expect(mocks.currentStatus).toHaveBeenCalledWith(FAKE_CLAUDE);
+  });
+
+  it("chooseBinary refuses a file that isn't Claude Code", async () => {
+    const txt = path.join(mocks.userData, "notes.txt");
+    fs.writeFileSync(txt, "hello");
+    mocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [txt] });
+    await expect(mocks.handlers.get("claudeCode:chooseBinary")!(sender)).rejects.toThrow(
+      "That file isn't Claude Code.",
+    );
+    expect(settingsFile()).not.toHaveProperty("claude_code_path");
+  });
+
+  it("chooseBinary refuses another program that prints a version", async () => {
+    const python = path.join(mocks.userData, "python3");
+    fs.writeFileSync(python, '#!/bin/sh\necho "Python 3.12.1"\n', { mode: 0o755 });
+    mocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [python] });
+    await expect(mocks.handlers.get("claudeCode:chooseBinary")!(sender)).rejects.toThrow(
+      "That file isn't Claude Code.",
+    );
+    expect(settingsFile()).not.toHaveProperty("claude_code_path");
+  });
+
+  // On macOS the dialog resolves symlinks unless told not to, which turns an
+  // nvm or npm `claude` into its cli.js, in a folder without `node`.
+  it("chooseBinary keeps a chosen link as it is, and shows hidden folders", async () => {
+    mocks.showOpenDialog.mockResolvedValue({ canceled: true, filePaths: [] });
+    await mocks.handlers.get("claudeCode:chooseBinary")!(sender);
+    expect(mocks.showOpenDialog.mock.calls[0][1].properties).toEqual([
+      "openFile",
+      "showHiddenFiles",
+      "noResolveAliases",
+    ]);
+  });
+
+  it("chooseBinary saves nothing when the dialog is cancelled", async () => {
+    mocks.showOpenDialog.mockResolvedValue({ canceled: true, filePaths: [] });
+    await expect(mocks.handlers.get("claudeCode:chooseBinary")!(sender)).resolves.toEqual(status);
+    expect(settingsFile()).not.toHaveProperty("claude_code_path");
+  });
+
+  it("ask validates the request and streams events to the asking window", async () => {
+    await mocks.handlers.get("claudeCode:ask")!(sender, "sub-1", { sessionId: "s1", question: "why?", model: "" });
+    const opts = mocks.runner.ask.mock.calls[0][0];
+    expect(opts).toMatchObject({ subId: "sub-1", sessionId: "s1", question: "why?", model: "", savedPath: null });
+    opts.onEvent({ event: "step-add", data: { label: "Find aborts" } });
+    expect(mocks.window.webContents.send).toHaveBeenCalledWith("claudeCode:event:sub-1", {
+      event: "step-add",
+      data: { label: "Find aborts" },
+    });
+  });
+
+  it("ask rejects a malformed request without starting a run", async () => {
+    await expect(
+      mocks.handlers.get("claudeCode:ask")!(sender, "sub-1", { sessionId: "../x", question: "q", model: "" }),
+    ).rejects.toThrow();
+    await expect(
+      mocks.handlers.get("claudeCode:ask")!(sender, "bad id!", { sessionId: "s", question: "q", model: "" }),
+    ).rejects.toThrow();
+    expect(mocks.runner.ask).not.toHaveBeenCalled();
+  });
+
+  it("closing the window stops its run", async () => {
+    mocks.runner.ask.mockReturnValue(new Promise(() => {}));
+    await mocks.handlers.get("claudeCode:ask")!(sender, "sub-1", { sessionId: "s1", question: "why?", model: "" });
+    const onClosed = mocks.window.once.mock.calls.find((c) => c[0] === "closed")![1] as () => void;
+    onClosed();
+    expect(mocks.runner.stop).toHaveBeenCalledWith("sub-1");
+  });
+
+  it("removes its closed listener when the run settles", async () => {
+    await mocks.handlers.get("claudeCode:ask")!(sender, "sub-1", { sessionId: "s1", question: "why?", model: "" });
+    await new Promise((r) => setImmediate(r));
+    const onClosed = mocks.window.once.mock.calls.find((c) => c[0] === "closed")![1];
+    expect(mocks.window.removeListener).toHaveBeenCalledWith("closed", onClosed);
+  });
+
+  it("stop stops the run by subId", async () => {
+    await mocks.handlers.get("claudeCode:stop")!(sender, "sub-1");
+    expect(mocks.runner.stop).toHaveBeenCalledWith("sub-1");
+  });
+
+  it("openInstallGuide opens the setup page", async () => {
+    await mocks.handlers.get("claudeCode:openInstallGuide")!(sender);
+    expect(mocks.openExternal).toHaveBeenCalledWith("https://code.claude.com/docs/en/setup");
   });
 });

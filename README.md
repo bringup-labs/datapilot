@@ -37,7 +37,7 @@ About 10 minutes from download to your first answer.
 1. **Install Docker and start it.** On macOS, install [Docker Desktop](https://www.docker.com/products/docker-desktop/). On Linux, install [Docker Engine](https://docs.docker.com/engine/install/) and [add yourself to the `docker` group](https://docs.docker.com/engine/install/linux-postinstall/).
 2. **[Download DataPilot](https://github.com/bringup-labs/datapilot/releases/latest)**: the `.dmg` for macOS (Apple silicon and Intel) or the `.AppImage` for Linux (x64). On Linux, make it executable with `chmod +x DataPilot-*.AppImage`.
 3. **Open DataPilot.** The first launch downloads its local services, about 1.5 GB, which takes a minute or two on a fast connection. This happens once.
-4. **Connect an AI model.** Open **Settings** (the gear at the bottom left), then **Models & API Keys**. The quickest free option is a Gemini key: create one at [Google AI Studio](https://aistudio.google.com/apikey) and paste it into **Gemini (Google)**. To keep everything on your computer, use Ollama instead. All the options are in [Free to use](#free-to-use).
+4. **Connect an AI model.** Open **Settings** (the gear at the bottom left), then **Models & API Keys**. The quickest free option is a Gemini key: create one at [Google AI Studio](https://aistudio.google.com/apikey) and paste it into **Gemini (Google)**. To keep everything on your computer, use Ollama instead. If you have a Claude plan and [Claude Code](https://code.claude.com/docs/en/setup) installed, you can click **Use Claude Code** in the Copilot, and DataPilot runs your own Claude Code with your own sign-in. All the options are in [Free to use](#free-to-use).
 5. **Load the sample bag and ask a question.** Download the sample recording into DataPilot's bag folder:
 
    ```bash
@@ -51,13 +51,14 @@ About 10 minutes from download to your first answer.
 
 ## Free to use
 
-DataPilot is free and open source under the Apache 2.0 license. There is no account, no sign-up, no usage limit and no telemetry. All you need is an AI model, and three of the supported options cost nothing:
+DataPilot is free and open source under the Apache 2.0 license. There is no DataPilot account or usage limit, no sign-up and no telemetry. All you need is an AI model, and three of the supported options cost nothing:
 
 | Model | Cost | Where your log excerpts go | Set it up in Settings → Models & API Keys |
 |---|---|---|---|
 | **[Ollama](https://ollama.com)**, local | Free | Nowhere. Everything stays on your computer. | Install Ollama and run `ollama pull llama3.2`. In **Ollama (local)**, click **Set default**, then **Refresh models**. |
 | **[Gemini](https://aistudio.google.com/apikey)** | Free tier | Google. On the free tier, Google may use the content to improve its products. | Paste the key into **Gemini (Google)**. Gemini is already the default. |
 | **[NVIDIA NIM](https://build.nvidia.com)** | Free for development and testing, through the [NVIDIA Developer Program](https://developer.nvidia.com/nim) | NVIDIA | Paste the key into **NVIDIA NIM**, then click **Set default** and **Refresh models**. |
+| Claude Code, with your Claude plan | Counts against your Claude plan, or is billed to the API key or cloud provider Claude Code is signed in with | Anthropic, under your own account | Install [Claude Code](https://code.claude.com/docs/en/setup). In **Claude Code on this computer**, sign in and turn on **Use for Copilot**. |
 | OpenAI, Anthropic, or any OpenAI-compatible endpoint | Billed by the provider | That provider | Paste the key and click **Set default**. |
 
 A small local model like `llama3.2` runs on most laptops but gives shallower answers than a hosted model. On the **Agents & MCP** screen you can also give each specialist agent its own model.
@@ -69,6 +70,7 @@ Docker Desktop is free for personal use, education, non-commercial open source, 
 - Parsing, indexing and the knowledge graph all run in Docker containers on your computer.
 - Those containers can read only `~/datapilot_bags`, and only read-only.
 - When you ask a question, DataPilot sends the question and the relevant log excerpts to the model you chose, and nothing else. With Ollama, nothing leaves your computer.
+- With Claude Code, the question, a recap of this chat, DataPilot's instructions and the tool results for the open bag go to Anthropic under your own account. Other bags, your files and your Claude Code customizations aren't sent, and nothing from DataPilot's chats is saved in Claude Code's folders.
 - API keys are encrypted with your operating system's keychain and are never sent through the app's web interface.
 - No analytics or telemetry. The only other network traffic is downloading DataPilot's services on first launch, and a 90 MB embedding model from Hugging Face the first time you load a bag.
 
@@ -103,7 +105,9 @@ Docker Desktop is free for personal use, education, non-commercial open source, 
 | **Registry ingestion failure** | DataPilot couldn't download its services. Check your internet connection, proxy and free disk space, then retry. |
 | Docker Desktop shows **unable to start** | Your disk is probably full. Free up space and restart Docker Desktop. |
 | **This bag is outside DataPilot's bag folder** | Move or copy the bag into `~/datapilot_bags` and load it again. |
-| **AI Model Not Connected** | Add a key or set up Ollama in **Settings → Models & API Keys**. |
+| **Connect an AI model** | Click **Use Claude Code**, or add a key or set up Ollama in **Settings → Models & API Keys**. |
+| **Claude Code isn't signed in** | Click **Sign in with Claude Code** in **Claude Code on this computer**, or run `claude` in a terminal and type `/login`. Settings that exist only in your shell, such as `ANTHROPIC_API_KEY` or a proxy, belong in the `env` block of Claude Code's settings file. |
+| **Your Claude plan's usage limit is reached** | Your question is saved. Choose **DataPilot's agents** in the Copilot's **Answer with** menu, or wait for the limit to reset. |
 | Ollama's model list is empty | Make sure Ollama is running and you have pulled a model (`ollama pull llama3.2`), then click **Refresh models**. On Linux, set `OLLAMA_HOST=0.0.0.0:11434` for the Ollama service so DataPilot's containers can reach it. |
 
 Still stuck? [Open an issue](https://github.com/bringup-labs/datapilot/issues/new) and include what you see on the setup screen.
@@ -133,9 +137,12 @@ flowchart LR
     end
     Bags[("~/datapilot_bags<br/>read-only")] --> Parser
     API -->|"question + relevant log excerpts"| Model["The model you choose:<br/>Ollama, Gemini, NVIDIA NIM,<br/>OpenAI, Anthropic"]
+    App -->|"starts, per question"| CC["Claude Code<br/>(your install, your sign-in)"]
+    CC -->|"localhost + token"| API
+    CC -->|"question + recap + tool results"| Anthropic["Anthropic<br/>(your account)"]
 ```
 
-When you load a bag, the parser extracts topics, logs, diagnostics and transforms. The backend embeds the log lines for semantic search, applies cause-and-effect rules, and stores everything in a local Neo4j graph. When you ask a question, a supervisor agent picks specialist agents, which query that graph and the raw bag through their tools, and a composer agent writes the answer from their cited findings. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for more.
+When you load a bag, the parser extracts topics, logs, diagnostics and transforms. The backend embeds the log lines for semantic search, applies cause-and-effect rules, and stores everything in a local Neo4j graph. When you ask a question, a supervisor agent picks specialist agents, which query that graph and the raw bag through their tools, and a composer agent writes the answer from their cited findings. If you choose Claude Code in the **Answer with** menu, the app instead starts your own Claude Code for each question, which sends the question, a recap of this chat and the tool results to Anthropic under your own account. It reads the open bag through a read-only, token-protected tool endpoint on `localhost`, and DataPilot checks its findings against the bag's log lines. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for more.
 
 ## Uninstall
 

@@ -1,3 +1,5 @@
+import type { ClaudeAuthMethod } from "./ipc";
+
 /**
  * Domain types shared by stores, services, and components.
  * All serializable — no JSX, no functions.
@@ -92,6 +94,7 @@ export interface Finding {
   sev: "critical" | "warning" | "info";
   text: string;
   detail?: string;
+  logIds?: string[];
 }
 
 export interface CausalItem {
@@ -107,6 +110,20 @@ export interface ChatAction {
   iconName: string;
   label: string;
   target: WorkspaceTab;
+}
+
+export type ChatNextStep =
+  | "open_settings"
+  | "sign_in"
+  | "use_datapilot"
+  | "retry"
+  | "open_agents";
+
+export interface ClaudeCodeUsage {
+  model: string;
+  authMethod: ClaudeAuthMethod;
+  toolCalls: number;
+  estCostUsd: number;
 }
 
 export type ChatRole = "user" | "assistant" | "system";
@@ -126,4 +143,10 @@ export interface ChatMessage {
     tokens_out: number;
     est_cost_usd?: number;
   };
+  answeredBy?: "claude_code";
+  verified?: boolean;
+  flaggedLogIds?: string[];
+  claudeCodeUsage?: ClaudeCodeUsage;
+  nextSteps?: ChatNextStep[];
+  retryQuestion?: string;
 }

@@ -7,8 +7,14 @@ import { FindingsCard } from "./FindingsCard";
 import { CausalChain } from "./CausalChain";
 import { useChatStore } from "@renderer/stores/chat";
 import { useUIStore } from "@renderer/stores/ui";
+import { useSettingsStore } from "@renderer/stores/settings";
+import { useClaudeCodeStore } from "@renderer/stores/claudeCode";
+import {
+  formatClaudeCodeUsage,
+  NEXT_STEP_LABELS,
+} from "@renderer/lib/claudeCodeCopy";
 import type { ChatMessage as ChatMessageType } from "@shared/types";
-import type { WorkspaceTab } from "@shared/types";
+import type { ChatNextStep, WorkspaceTab } from "@shared/types";
 
 interface ChatMessageProps {
   msg: ChatMessageType;
@@ -24,6 +30,34 @@ function ActionIcon({ name }: { name: string }): JSX.Element | null {
 
 export function ChatMessage({ msg }: ChatMessageProps): JSX.Element {
   const setTab = useUIStore((s) => s.setTab);
+  const claudeCode = msg.answeredBy === "claude_code";
+
+  const runNextStep = (step: ChatNextStep): void => {
+    const ui = useUIStore.getState();
+    const chat = useChatStore.getState();
+    switch (step) {
+      case "open_settings":
+        ui.setSettingsSectionTarget("models");
+        ui.setScreen("settings");
+        break;
+      case "sign_in":
+        void useClaudeCodeStore.getState().signIn();
+        break;
+      case "use_datapilot":
+        void useSettingsStore
+          .getState()
+          .setSetting("copilotEngine", "datapilot");
+        if (msg.retryQuestion) chat.requestResend(msg.retryQuestion);
+        break;
+      case "retry":
+        if (msg.retryQuestion) chat.requestResend(msg.retryQuestion);
+        break;
+      case "open_agents":
+        ui.setAgentsSectionTarget("mcp");
+        ui.setScreen("agents");
+        break;
+    }
+  };
 
   // True only for the last assistant message while the model is streaming —
   // used to show the thinking-dots placeholder until content arrives.
@@ -66,6 +100,22 @@ export function ChatMessage({ msg }: ChatMessageProps): JSX.Element {
           <Icon.Sparkles size={12} />
           <span>{msg.text}</span>
         </div>
+        {msg.nextSteps && msg.nextSteps.length > 0 && (
+          <div
+            className="row gap-2"
+            style={{ flexWrap: "wrap", marginBottom: 4 }}
+          >
+            {msg.nextSteps.map((step) => (
+              <button
+                key={step}
+                className="btn ghost sm"
+                onClick={() => runNextStep(step)}
+              >
+                {NEXT_STEP_LABELS[step]}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -79,15 +129,20 @@ export function ChatMessage({ msg }: ChatMessageProps): JSX.Element {
             width: 22,
             height: 22,
             borderRadius: 6,
-            background:
-              "linear-gradient(135deg, var(--color-accent), oklch(0.55 0.18 280))",
+            background: claudeCode
+              ? "var(--color-bg-3)"
+              : "linear-gradient(135deg, var(--color-accent), oklch(0.55 0.18 280))",
             display: "grid",
             placeItems: "center",
             color: "var(--color-bg-0)",
             flexShrink: 0,
           }}
         >
-          <Icon.Sparkles size={12} strokeWidth={2} />
+          {claudeCode ? (
+            <Icon.Terminal size={12} strokeWidth={2} />
+          ) : (
+            <Icon.Sparkles size={12} strokeWidth={2} />
+          )}
         </div>
         <span
           style={{
@@ -96,7 +151,7 @@ export function ChatMessage({ msg }: ChatMessageProps): JSX.Element {
             color: "var(--color-text-1)",
           }}
         >
-          DataPilot
+          {claudeCode ? "answered by Claude Code" : "DataPilot"}
         </span>
         {msg.time && (
           <span className="dim" style={{ fontSize: 11 }}>
@@ -138,10 +193,38 @@ export function ChatMessage({ msg }: ChatMessageProps): JSX.Element {
         </div>
       )}
 
+      {msg.flaggedLogIds && msg.flaggedLogIds.length > 0 && (
+        <div className="dim" style={{ fontSize: 11, marginBottom: 6 }}>
+          {`Not found in this bag: ${msg.flaggedLogIds.join(", ")}`}
+        </div>
+      )}
+      {msg.verified === false && (
+        <div
+          style={{ fontSize: 11, marginBottom: 6, color: "var(--color-warn)" }}
+        >
+          No verified findings
+        </div>
+      )}
+
       {msg.findings && <FindingsCard findings={msg.findings} />}
       {msg.causal && <CausalChain items={msg.causal} />}
 
-      {msg.role === "assistant" && msg.usage && (
+      {msg.claudeCodeUsage && (
+        <div
+          className="row gap-2 dim"
+          style={{
+            fontSize: 10,
+            marginTop: 6,
+            fontFamily: "var(--font-mono, monospace)",
+            opacity: 0.85,
+          }}
+        >
+          <Icon.Activity size={10} />
+          <span>{formatClaudeCodeUsage(msg.claudeCodeUsage)}</span>
+        </div>
+      )}
+
+      {msg.role === "assistant" && msg.usage && !msg.claudeCodeUsage && (
         <div
           className="row gap-2 dim"
           style={{

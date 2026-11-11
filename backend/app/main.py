@@ -36,8 +36,11 @@ async def internal_error_handler(request: Request, exc: Exception) -> JSONRespon
 from app.db_sqlite import init_db
 from app.api.sessions import router as sessions_router
 from app.api.chat import router as chat_router
+from app.api.agent_turns import router as agent_turns_router
 from app.api.mcp import router as mcp_router
 from app.api.settings_api import router as settings_router
+from app.api.mcp_endpoint import MCPEndpoint, create_session_manager
+from starlette.routing import Route
 from app.services.neo4j_client import neo4j_client
 
 
@@ -67,7 +70,11 @@ async def lifespan(_app: FastAPI):
                 set_specialist_override(row.specialist, row.model_id)
     except Exception:
         pass  # Non-fatal — fresh installs have no overrides yet
-    yield
+    # run() works once per manager instance, so build a fresh one per lifespan.
+    manager = create_session_manager()
+    _app.state.mcp_session_manager = manager
+    async with manager.run():
+        yield
     # Shutdown: close the shared Neo4j driver so its connection pool
     # releases sockets back to the OS rather than relying on GC.
     try:
@@ -121,8 +128,11 @@ app.add_exception_handler(Exception, internal_error_handler)
 # Register routers
 app.include_router(sessions_router, prefix="/api")
 app.include_router(chat_router, prefix="/api")
+app.include_router(agent_turns_router, prefix="/api")
 app.include_router(mcp_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
+# Claude Code's tool endpoint. A Route (not app.mount) so it serves /mcp, not /mcp/mcp.
+app.router.routes.append(Route("/mcp", endpoint=MCPEndpoint(), include_in_schema=False))
 
 
 

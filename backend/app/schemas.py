@@ -157,3 +157,25 @@ class ChatMessageEnvelope(BaseModel):
     citations: List[Citation] = Field(default_factory=list)
     usage: Optional[UsageMetrics] = None
     partial: bool = False
+
+
+class AgentTurnUsage(BaseModel):
+    tokens_in: int = Field(0, ge=0)
+    tokens_out: int = Field(0, ge=0)
+    est_cost_usd: float = Field(0, ge=0)
+
+
+class AgentTurnStep(BaseModel):
+    tool: str = Field(..., max_length=100)
+    label: str = Field(..., max_length=300)
+
+
+class AgentTurnComplete(BaseModel):
+    """Electron main's report that a Claude Code turn has ended."""
+    question: str = Field(..., min_length=1, max_length=MAX_MESSAGE_CHARS)
+    response: str = Field("", max_length=100_000)
+    model: str = Field("", max_length=200)
+    auth_method: Literal["claude.ai", "oauth_token", "api_key", "api_key_helper", "third_party", "none"]
+    usage: AgentTurnUsage
+    steps: List[AgentTurnStep] = Field(default_factory=list, max_length=200)
+    status: Literal["completed", "stopped", "failed"]

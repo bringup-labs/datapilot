@@ -11,6 +11,8 @@
  * type guards / asserts. Keep them small and pure so they remain easy to audit
  * and (eventually) unit-test.
  */
+import type { ClaudeCodeAskRequest, ClaudeCodeModel } from "@shared/ipc";
+
 
 /**
  * Error type for rejected IPC payloads. Thrown from guards and surfaced to the
@@ -78,7 +80,11 @@ export function assertSafeKey(value: unknown, label = "key"): string {
  * a root-equivalent capability — so it is delivered out of band (env override,
  * validated by `validateDockerSocket`), never from renderer-writable settings.
  */
-const PRIVILEGED_SETTINGS_KEYS: ReadonlySet<string> = new Set(["docker_socket"]);
+const PRIVILEGED_SETTINGS_KEYS: ReadonlySet<string> = new Set([
+  "docker_socket",
+  // The Claude Code binary DataPilot runs; written only by claudeCode:chooseBinary.
+  "claude_code_path",
+]);
 
 /**
  * Validates a key for the generic `settings:set` write path. Builds on
@@ -115,6 +121,32 @@ export function assertTheme(value: unknown): Theme {
     );
   }
   return value as Theme;
+}
+
+/** The backend's MAX_MESSAGE_CHARS. */
+export const MAX_QUESTION_CHARS = 32_000;
+const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const CLAUDE_MODELS: readonly string[] = ["", "sonnet", "opus", "haiku"];
+
+/** Validates a Copilot question for Claude Code; returns only the three known fields. */
+export function assertClaudeCodeAskRequest(value: unknown): ClaudeCodeAskRequest {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new IpcValidationError("request must be an object");
+  }
+  const { sessionId, question, model } = value as Record<string, unknown>;
+  if (typeof sessionId !== "string" || !SESSION_ID_RE.test(sessionId)) {
+    throw new IpcValidationError("sessionId is invalid");
+  }
+  if (typeof question !== "string" || question.trim() === "") {
+    throw new IpcValidationError("question must be a non-empty string");
+  }
+  if (question.length > MAX_QUESTION_CHARS) {
+    throw new IpcValidationError("question is too long");
+  }
+  if (typeof model !== "string" || !CLAUDE_MODELS.includes(model)) {
+    throw new IpcValidationError("model is not supported");
+  }
+  return { sessionId, question, model: model as ClaudeCodeModel };
 }
 
 /** Allowed characters for a renderer-supplied log-stream subscription id. */

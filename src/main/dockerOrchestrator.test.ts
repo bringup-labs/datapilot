@@ -85,6 +85,18 @@ describe("ensureStackUp", () => {
     );
   });
 
+  it("gives the backend this launch's tool-endpoint token", async () => {
+    const { dockerOrchestrator } = await import("./dockerOrchestrator");
+    const { getMcpToken } = await import("./claudeCode/mcpToken");
+
+    await dockerOrchestrator.ensureStackUp();
+
+    const file = JSON.parse(
+      fs.readFileSync(path.join(state.userData, "secrets", "backend-keys.json"), "utf-8"),
+    );
+    expect(file.mcp_token).toBe(getMcpToken());
+  });
+
   // Neo4j reports usage to Neo4j Inc. unless told not to. docker-compose.yml
   // already turns this off, and the desktop app must match it.
   it("starts Neo4j with usage reporting and driver telemetry off", async () => {

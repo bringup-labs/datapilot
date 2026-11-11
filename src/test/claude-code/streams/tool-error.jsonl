@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "s1", "mcp_servers": [{"name": "datapilot", "status": "connected"}], "model": "claude-sonnet-4-5-20250929"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "mcp__datapilot__find_aborts", "input": {}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "boom", "is_error": true}]}}
+{"type": "result", "subtype": "success", "is_error": false, "result": "No aborts found.", "num_turns": 4, "total_cost_usd": 0.0123, "usage": {"input_tokens": 1000, "output_tokens": 200, "cache_read_input_tokens": 500}}

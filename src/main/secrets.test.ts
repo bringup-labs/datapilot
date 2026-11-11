@@ -97,4 +97,8 @@ describe("decodeSecretBlob (#40)", () => {
     const legacy = Buffer.from("legacy-plain", "utf-8").toString("base64");
     expect(decodeSecretBlob(legacy, fakeUnavailable)).toBe("legacy-plain");
   });
+
+  it("keeps a non-provider key such as mcp_token", () => {
+    expect(JSON.parse(serializeSecretsFile({ anthropic: "", mcp_token: "abc" }))).toEqual({ mcp_token: "abc" });
+  });
 });

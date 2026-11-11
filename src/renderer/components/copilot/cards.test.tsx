@@ -6,6 +6,8 @@ import { PlanCard } from "./PlanCard";
 import { ChatMessage } from "./ChatMessage";
 import { useChatStore } from "@renderer/stores/chat";
 import { useUIStore } from "@renderer/stores/ui";
+import { useSettingsStore } from "@renderer/stores/settings";
+import { useClaudeCodeStore } from "@renderer/stores/claudeCode";
 import type {
   ChatMessage as ChatMessageType,
   Finding,
@@ -245,4 +247,107 @@ describe("ChatMessage accessibility (issue #49)", () => {
     expect(btn).toHaveAccessibleName(/Open Map/);
     expect(within(btn).getByText("Open Map")).toBeInTheDocument();
   });
+});
+
+describe("Claude Code answers", () => {
+  const answer: ChatMessageType = {
+    id: "a1",
+    role: "assistant",
+    time: "10:42",
+    summary: "Planner aborted.",
+    answeredBy: "claude_code",
+    verified: true,
+    claudeCodeUsage: {
+      model: "claude-sonnet-4-5-20250929",
+      authMethod: "claude.ai",
+      toolCalls: 7,
+      estCostUsd: 0.0123,
+    },
+  };
+
+  it("says the answer came from Claude Code", () => {
+    render(<ChatMessage msg={answer} />);
+    expect(screen.getByText("answered by Claude Code")).toBeInTheDocument();
+    expect(screen.queryByText("DataPilot")).toBeNull();
+  });
+  it("shows the plan usage line instead of token counts", () => {
+    render(<ChatMessage msg={{ ...answer, usage: { tokens_in: 1, tokens_out: 1 } }} />);
+    expect(
+      screen.getByText("Claude Code · Sonnet · 7 tool calls · counted against your Claude plan"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/^In:/)).toBeNull();
+  });
+  it("shows Claude Code's cost estimate for an API key", () => {
+    render(
+      <ChatMessage
+        msg={{
+          ...answer,
+          claudeCodeUsage: { model: "claude-opus-4-1", authMethod: "api_key", toolCalls: 1, estCostUsd: 0.0123 },
+        }}
+      />,
+    );
+    expect(screen.getByText("Claude Code · Opus · 1 tool call · est. $0.0123")).toBeInTheDocument();
+  });
+  it("says No verified findings when nothing passed the evidence check", () => {
+    render(<ChatMessage msg={{ ...answer, verified: false }} />);
+    expect(screen.getByText("No verified findings")).toBeInTheDocument();
+  });
+  it("lists summary log IDs that aren't in this bag", () => {
+    render(<ChatMessage msg={{ ...answer, flaggedLogIds: ["l_999", "other-bag:l_5"] }} />);
+    expect(screen.getByText("Not found in this bag: l_999, other-bag:l_5")).toBeInTheDocument();
+  });
+
+  describe("next steps", () => {
+    const sys = (nextSteps: ChatMessageType["nextSteps"]): ChatMessageType => ({
+      id: "e1",
+      role: "system",
+      text: "Your Claude plan's usage limit is reached. Your question is saved.",
+      nextSteps,
+      retryQuestion: "why?",
+    });
+    beforeEach(() => {
+      useChatStore.setState({ pendingResend: null });
+      useUIStore.setState({ screen: "copilot", settingsSectionTarget: null, agentsSectionTarget: null });
+    });
+
+    it("offers next steps on a Claude Code error", async () => {
+      const setSetting = vi.fn();
+      useSettingsStore.setState({ setSetting });
+      render(<ChatMessage msg={sys(["use_datapilot", "retry"])} />);
+      await userEvent.click(screen.getByRole("button", { name: "Answer with DataPilot's agents" }));
+      expect(setSetting).toHaveBeenCalledWith("copilotEngine", "datapilot");
+      expect(useChatStore.getState().pendingResend).toBe("why?");
+    });
+    it("Retry resends the question", async () => {
+      render(<ChatMessage msg={sys(["retry"])} />);
+      await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(useChatStore.getState().pendingResend).toBe("why?");
+    });
+    it("Open Settings goes to the models section", async () => {
+      render(<ChatMessage msg={sys(["open_settings"])} />);
+      await userEvent.click(screen.getByRole("button", { name: "Open Settings" }));
+      expect(useUIStore.getState().settingsSectionTarget).toBe("models");
+      expect(useUIStore.getState().screen).toBe("settings");
+    });
+    it("Open Agents & MCP goes to the mcp section", async () => {
+      render(<ChatMessage msg={sys(["open_agents"])} />);
+      await userEvent.click(screen.getByRole("button", { name: "Open Agents & MCP" }));
+      expect(useUIStore.getState().agentsSectionTarget).toBe("mcp");
+      expect(useUIStore.getState().screen).toBe("agents");
+    });
+    it("Sign in calls Claude Code sign-in", async () => {
+      const signIn = vi.fn().mockResolvedValue(undefined);
+      useClaudeCodeStore.setState({ signIn });
+      render(<ChatMessage msg={sys(["sign_in"])} />);
+      await userEvent.click(screen.getByRole("button", { name: "Sign in with Claude Code" }));
+      expect(signIn).toHaveBeenCalled();
+    });
+  });
+});
+
+it("FindingsCard shows each finding's cited log IDs in short form", () => {
+  render(
+    <FindingsCard findings={[{ sev: "critical", text: "Planner aborted", logIds: ["sess-1:l_5", "sess-1:l_8"] }]} />,
+  );
+  expect(screen.getByText("l_5 · l_8")).toBeInTheDocument();
 });

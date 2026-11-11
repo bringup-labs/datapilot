@@ -15,6 +15,10 @@ extraResources:
   # service definitions. Placed at process.resourcesPath/docker-compose.yml.
   - from: docker-compose.yml
     to: docker-compose.yml
+  # The guide is appended to Claude Code's system prompt. The external `claude`
+  # cannot read inside app.asar, so it ships as a plain resource.
+  - from: src/main/claudeCode/datapilot-guide.md
+    to: datapilot-guide.md
 
 asar: true
 

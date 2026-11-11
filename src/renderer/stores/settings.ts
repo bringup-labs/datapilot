@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { clearAllSessions, updateBackendKey } from "@renderer/services/api";
+import type { ClaudeCodeModel, CopilotEngine } from "@shared/ipc";
 
 export const ACCENT_PRESETS = [
   { color: "oklch(0.74 0.17 235)", label: "Electric" },
@@ -30,6 +31,8 @@ interface SettingsState {
   autoIndexBags: boolean;
   chunkWindow: string;
   updateChannel: string;
+  copilotEngine: CopilotEngine;
+  claudeCodeModel: ClaudeCodeModel;
   loading: boolean;
 
   loadSettings: () => Promise<void>;
@@ -67,6 +70,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   autoIndexBags: true,
   chunkWindow: "5 sec",
   updateChannel: "Stable",
+  copilotEngine: "datapilot",
+  claudeCodeModel: "",
   loading: false,
 
   loadSettings: async () => {
@@ -134,6 +139,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         autoIndexBags,
         chunkWindow,
         updateChannel,
+        copilotEngineRaw,
+        claudeCodeModelRaw,
         keychainValues,
       ] = await Promise.all([
         getStr("accent_color", "Electric"),
@@ -155,10 +162,21 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         getBool("auto_index_bags", true),
         getStr("chunk_window", "5 sec"),
         getStr("update_channel", "Stable"),
+        getStr("copilot_engine", "datapilot"),
+        getStr("claude_code_model", ""),
         Promise.all(
           providerIds.map(async (p) => window.datapilot.keychain.get(p)),
         ),
       ]);
+
+      const copilotEngine: CopilotEngine =
+        copilotEngineRaw === "claude_code" ? "claude_code" : "datapilot";
+      const claudeCodeModel: ClaudeCodeModel =
+        claudeCodeModelRaw === "sonnet" ||
+        claudeCodeModelRaw === "opus" ||
+        claudeCodeModelRaw === "haiku"
+          ? claudeCodeModelRaw
+          : "";
 
       const apiKeys: Record<string, string> = {};
       providerIds.forEach((p, i) => {
@@ -185,6 +203,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         autoIndexBags,
         chunkWindow,
         updateChannel,
+        copilotEngine,
+        claudeCodeModel,
         apiKeys,
         loading: false,
       });
@@ -323,6 +343,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         "auto_index_bags",
         "chunk_window",
         "update_channel",
+        "copilot_engine",
+        "claude_code_model",
       ];
 
       for (const k of keysToReset) {

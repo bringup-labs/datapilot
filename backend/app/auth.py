@@ -17,6 +17,7 @@ Design notes:
 """
 from __future__ import annotations
 
+import json
 import os
 import secrets
 
@@ -35,7 +36,9 @@ AUTHORIZATION_HEADER = "Authorization"
 TOKEN_HEADER = "X-DataPilot-Token"
 
 #: Exact paths that never require a token (liveness + service root).
-_EXEMPT_PATHS: frozenset[str] = frozenset({"/", "/health"})
+#: ``/mcp`` is exempt because ``MCPEndpoint`` always requires its own per-launch
+#: token (Claude Code can send only one Bearer credential).
+_EXEMPT_PATHS: frozenset[str] = frozenset({"/", "/health", "/mcp"})
 
 #: Path prefixes that never require a token (interactive docs + OpenAPI schema).
 _EXEMPT_PREFIXES: tuple[str, ...] = ("/docs", "/redoc", "/openapi")
@@ -108,3 +111,39 @@ class APITokenMiddleware(BaseHTTPMiddleware):
             )
 
         return await call_next(request)
+
+
+#: Cache of the last token read: ``(path, st_mtime_ns) -> token``.
+_mcp_token_cache: dict[tuple[str, int], str] = {}
+
+
+def read_mcp_token(path: str | None) -> str | None:
+    """Return the ``mcp_token`` from the JSON secrets file, or ``None``.
+
+    A token is re-read only when the file's mtime changes, so a token rotated
+    by a new app launch is picked up without restarting a reused backend
+    container. Missing/unreadable/malformed files or a missing key yield
+    ``None``, which is never cached: the file may be mid-write, and the full
+    file can land within the same mtime. The value is never logged.
+    """
+    if not path:
+        return None
+    try:
+        key = (path, os.stat(path).st_mtime_ns)
+    except OSError:
+        return None
+    if key in _mcp_token_cache:
+        return _mcp_token_cache[key]
+    token: str | None = None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        value = data.get("mcp_token") if isinstance(data, dict) else None
+        if isinstance(value, str) and value.strip():
+            token = value.strip()
+    except (OSError, ValueError):
+        token = None
+    if token is not None:
+        _mcp_token_cache.clear()
+        _mcp_token_cache[key] = token
+    return token
