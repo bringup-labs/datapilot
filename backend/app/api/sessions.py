@@ -11,8 +11,9 @@ from typing import List, Optional
 import aiosqlite
 from pathlib import Path
 
+from app.agent.turn_store import turn_store
 from app.db_sqlite import get_db, AsyncSessionLocal
-from app.models import SessionRecord
+from app.models import ChatMessageRecord, SessionCostRecord, SessionRecord
 from app.config import settings
 from app.schemas import (
     SessionCreate, SessionResponse, TimelineEvent, TopicInfo, LogItem,
@@ -282,6 +283,7 @@ async def delete_session(session_id: str, db: AsyncSession = Depends(get_db)):
         logger.warning("error clearing neo4j for session %s: %s", session_id, e)
 
     await _clear_checkpoints_for_session(session_id)
+    turn_store.discard_session(session_id)
     await db.delete(record)
     await db.commit()
     return {"status": "success", "message": f"Session {session_id} deleted"}
@@ -294,6 +296,11 @@ async def delete_all_sessions(db: AsyncSession = Depends(get_db)):
         logger.warning("error clearing neo4j: %s", e)
 
     await _clear_all_checkpoints()
+    turn_store.clear()
+    # Bulk deletes skip the ORM cascade and SQLite FKs are off, so clear the
+    # child tables explicitly before the sessions.
+    await db.execute(delete(ChatMessageRecord))
+    await db.execute(delete(SessionCostRecord))
     await db.execute(delete(SessionRecord))
     await db.commit()
     return {"status": "success", "message": "All sessions cleared"}

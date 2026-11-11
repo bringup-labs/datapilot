@@ -14,6 +14,7 @@ import {
   SECRET_PROVIDERS,
   type SecretCrypto,
 } from "./secrets";
+import { getMcpToken } from "./claudeCode/mcpToken";
 
 const execAsync = promisify(exec);
 
@@ -126,6 +127,7 @@ class DockerOrchestrator {
     for (const provider of SECRET_PROVIDERS) {
       keys[provider] = this.getSecureKey(provider);
     }
+    keys.mcp_token = getMcpToken();
     const hostPath = this.getSecretsHostPath();
     fs.mkdirSync(path.dirname(hostPath), { recursive: true, mode: 0o700 });
     fs.writeFileSync(hostPath, serializeSecretsFile(keys), { mode: 0o600 });

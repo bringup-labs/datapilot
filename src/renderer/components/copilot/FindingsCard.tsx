@@ -56,6 +56,16 @@ export function FindingsCard({ findings }: FindingsCardProps): JSX.Element {
                   {f.text}
                 </ReactMarkdown>
               </div>
+              {f.logIds && f.logIds.length > 0 && (
+                <div
+                  className="dim mono"
+                  style={{ fontSize: 10.5, marginTop: 3 }}
+                >
+                  {f.logIds
+                    .map((id) => id.slice(id.lastIndexOf(":") + 1))
+                    .join(" · ")}
+                </div>
+              )}
               {f.detail && (
                 <div
                   className="dim mono chat-md"

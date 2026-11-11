@@ -111,6 +111,7 @@ graph TD
   - **Docker Socket Orchestrator**: Connects to the Unix socket `/var/run/docker.sock` via `dockerode`. On startup, it checks if Docker is active and pulls/launches the containerized stack (FastAPI, Neo4j, and the 5 MCP servers).
   - **IPC Bridge Handler**: Coordinates secure IPC events between the Renderer and Main process.
   - **Native File System Picker**: Opens native OS dialogs to select local `.mcap` files, bypassing browser file upload limits.
+  - **Claude Code runner** (`src/main/claudeCode/`): Optionally answers Copilot questions with the engineer's own installed, signed-in Claude Code. DataPilot doesn't install it. For each question the runner starts one `claude -p` process in an empty temporary folder, with Claude Code's file, shell and web tools off and the user's own hooks, plugins, skills, memory and CLAUDE.md turned off for that run. It reads the process's stream-json output, hands Claude Code a fresh MCP token each launch, and reports the finished turn to the backend. The module also finds the `claude` binary, checks its version and sign-in status, and loads DataPilot's guide for Claude Code (`datapilot-guide.md`).
 
 ### B. Shared Module (`src/shared/`)
 * Declares standard, immutable IPC channel contracts and request/response structures.
@@ -119,6 +120,7 @@ graph TD
 ### C. Backend Container (FastAPI + LangGraph)
 * **API Layer**: Exposes endpoints on local port `8000` to feed dashboard analytics and manage chat sessions.
 * **LangGraph Orchestrator**: Runs the supervisor-specialist multi-agent state machine. It uses LangGraph's standard SQLite saver to persist state checkpoints locally.
+* **Claude Code tool endpoint and turn store**: `POST /mcp` (`backend/app/api/mcp_endpoint.py`) is a token-protected MCP endpoint that gives Claude Code 17 tools: 16 read-only tools for the open bag, plus `submit_findings`. Findings are checked against the bag's log lines with the same rule the composer uses, and the summary's log IDs are checked too. An answer with no verified findings says so. The turn store (`backend/app/agent/turn_store.py`, `backend/app/api/agent_turns.py`) records each Claude Code turn in DataPilot's own chat history, so Delete session and Clear all remove it.
 * **LLM Router**: Dispatches reasoning queries based on user settings:
   - **OpenAI**: Connects to cloud API.
   - **Gemini**: Connects to cloud API.
@@ -205,6 +207,22 @@ sequenceDiagram
     API-->>ElectronUI: Return response & steps audit trail
     ElectronUI->>User: Render diagnosis and execution timeline
 ```
+
+### Phase 3: Claude Code Answer Flow
+Copilot questions are answered either by DataPilot's agents (Phase 2) or by Claude Code, chosen in the Copilot header's "Answer with" menu or by turning on "Use for Copilot" in Settings. With Claude Code, the question, a recap of the chat's earlier turns, Claude Code's instructions plus DataPilot's guide, and the tool results for the open bag go to Anthropic under the user's own account. Usage counts against the user's Claude plan, or is billed to the API key or cloud provider Claude Code is signed in with.
+
+```mermaid
+flowchart LR
+    R["Renderer<br/>Copilot, Settings"] -- IPC --> M["Electron main<br/>Claude Code runner"]
+    M -- "spawns, reads stream-json" --> C["Claude Code<br/>(user's install, user's sign-in)"]
+    C -- "MCP over HTTP, localhost, token" --> B["Backend in Docker<br/>tool endpoint + submit_findings"]
+    M -- "complete turn" --> B
+    C -- "question + recap + tool results" --> A["Anthropic<br/>(user's own account)"]
+```
+
+1. The runner calls `POST /api/sessions/{id}/agent-turns` to open a turn, then spawns `claude -p`.
+2. Claude Code calls DataPilot's 17 tools at `http://localhost:8000/mcp`: it reads the open bag with the 16 read-only ones and reports through `submit_findings`.
+3. The runner calls `POST /api/sessions/{id}/agent-turns/{turn_id}/complete` with the answer and usage, and the backend saves the turn in the chat history.
 
 ---
 
@@ -304,7 +322,7 @@ Models fleet metadata, runs, occurrences, and root causes.
 
 ## 6. API Endpoint Design
 
-All endpoints are hosted on `http://localhost:8000/api`.
+Most endpoints are hosted on `http://localhost:8000/api`.
 
 ### Session Creation
 
@@ -340,3 +358,31 @@ All endpoints are hosted on `http://localhost:8000/api`.
   }
   ```
 * **Response**: `200 OK` (Streams SSE payload containing plan steps status, token streams, and final structured citations/audit_trail blocks).
+
+### Claude Code Endpoints
+
+#### 3. MCP Tool Endpoint
+* **Method**: `POST`
+* **Path**: `/mcp` (at `http://localhost:8000/mcp`, outside `/api`)
+* **Auth**: Bearer token that Electron main creates fresh each launch.
+* **Purpose**: MCP over HTTP for Claude Code. Exposes 17 tools: 16 read-only tools for the open bag, plus `submit_findings`.
+
+#### 4. Open an Agent Turn
+* **Method**: `POST`
+* **Path**: `/api/sessions/{session_id}/agent-turns`
+* **Response**: `201 Created`
+  ```json
+  {
+    "turn_id": "..."
+  }
+  ```
+
+#### 5. Complete an Agent Turn
+* **Method**: `POST`
+* **Path**: `/api/sessions/{session_id}/agent-turns/{turn_id}/complete`
+* **Purpose**: Saves the Claude Code answer, with its verified findings and usage, into the session's chat history.
+
+#### 6. Chat History
+* **Method**: `GET`
+* **Path**: `/api/sessions/{id}/messages`
+* **Change**: Each row gains `answered_by`, `verified`, `flagged_log_ids` and `claude_code_usage`.

@@ -80,6 +80,7 @@ AuditStepKind = Literal[
     "replan",
     "compose",
     "error",
+    "external_agent",
 ]
 
 

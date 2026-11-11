@@ -46,6 +46,7 @@ describe("useSession", () => {
       pendingPath: null,
       pendingSessionId: null,
       sessionId: null,
+      loadedPath: null,
       status: "idle",
       meta: null,
       timeline: [],
@@ -172,6 +173,55 @@ describe("useSession", () => {
     });
 
     expect(useSessionStore.getState().status).toBe("ready");
+  });
+
+  // A screen switch unmounts the Copilot, which runs this hook. Coming back must
+  // keep the loaded bag: loading it again would create a new session and clear
+  // its chat, including an answer still streaming.
+  it("keeps a ready bag when the Copilot remounts after a screen switch", async () => {
+    mockApi.createSession.mockResolvedValue({ session_id: "s1" });
+    mockApi.getSession.mockResolvedValue(meta({ status: "ready" }));
+    const first = renderHook(() => useSession("/bags/robot.mcap"));
+    await waitFor(() => expect(mockApi.getKGraph).toHaveBeenCalledTimes(1));
+    first.unmount();
+
+    renderHook(() => useSession("/bags/robot.mcap"));
+    await act(async () => {});
+
+    expect(useSessionStore.getState()).toMatchObject({ sessionId: "s1", status: "ready" });
+    expect(mockApi.createSession).toHaveBeenCalledTimes(1);
+    expect(mockApi.getKGraph).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a ready session resumed from history when the Copilot remounts", async () => {
+    useSessionStore.setState({ pendingSessionId: "existing" });
+    mockApi.getSession.mockResolvedValue(meta({ id: "existing", status: "ready" }));
+    const first = renderHook(() => useSession(null));
+    await waitFor(() => expect(mockApi.getKGraph).toHaveBeenCalledTimes(1));
+    const calls = mockApi.getSession.mock.calls.length;
+    first.unmount();
+
+    renderHook(() => useSession(null));
+    await act(async () => {});
+
+    expect(useSessionStore.getState()).toMatchObject({ sessionId: "existing", status: "ready" });
+    expect(mockApi.getSession).toHaveBeenCalledTimes(calls);
+  });
+
+  it("still loads another bag picked while one is loaded", async () => {
+    mockApi.createSession
+      .mockResolvedValueOnce({ session_id: "s1" })
+      .mockResolvedValueOnce({ session_id: "s2" });
+    mockApi.getSession.mockImplementation(async (id: string) => meta({ id, status: "ready" }));
+    const { rerender } = renderHook(({ path }) => useSession(path), {
+      initialProps: { path: "/bags/a.mcap" },
+    });
+    await waitFor(() => expect(useSessionStore.getState().sessionId).toBe("s1"));
+
+    rerender({ path: "/bags/b.mcap" });
+
+    await waitFor(() => expect(useSessionStore.getState()).toMatchObject({ sessionId: "s2", status: "ready" }));
+    expect(mockApi.createSession).toHaveBeenLastCalledWith("/bags/b.mcap");
   });
 
   it("cancels in-flight work and clears the poll timer on unmount", async () => {

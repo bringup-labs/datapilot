@@ -63,4 +63,12 @@ describe("useUIStore", () => {
     expect(s.tab).toBe("metrics");
     expect(s.selectedEventT).toBeNull();
   });
+
+  it("setAgentsSectionTarget sets and clears the target", () => {
+    expect(useUIStore.getState().agentsSectionTarget).toBeNull();
+    useUIStore.getState().setAgentsSectionTarget("mcp");
+    expect(useUIStore.getState().agentsSectionTarget).toBe("mcp");
+    useUIStore.getState().setAgentsSectionTarget(null);
+    expect(useUIStore.getState().agentsSectionTarget).toBeNull();
+  });
 });

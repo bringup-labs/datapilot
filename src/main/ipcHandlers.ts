@@ -9,6 +9,13 @@ import {
 import fs from "fs";
 import path from "path";
 import { dockerOrchestrator } from "./dockerOrchestrator";
+import { claudeRunner, currentStatus } from "./claudeCode";
+import { signIn } from "./claudeCode/auth";
+import { readVersion } from "./claudeCode/locate";
+import {
+  CLAUDE_CODE_INSTALL_GUIDE_URL,
+  type ClaudeCodeStatus,
+} from "@shared/ipc";
 import type {
   DockerStatus,
   KeychainSetResult,
@@ -16,6 +23,7 @@ import type {
 } from "@shared/ipc";
 import {
   IpcValidationError,
+  assertClaudeCodeAskRequest,
   assertKnownService,
   assertSafeKey,
   assertSettableKey,
@@ -278,6 +286,91 @@ export function registerIpcHandlers(): void {
       const subId = assertSubId(rawSubId);
       activeLogStreams.get(subId)?.();
       activeLogStreams.delete(subId);
+    },
+  );
+
+  // Claude Code. The renderer never supplies a path or a URL: the binary is
+  // chosen in a native dialog here, and the saved path is a privileged setting.
+  const savedClaudePath = (): string | null => {
+    const v = readSettings()["claude_code_path"];
+    return typeof v === "string" && v ? v : null;
+  };
+
+  ipcMain.handle(
+    "claudeCode:status",
+    async (): Promise<ClaudeCodeStatus> => currentStatus(savedClaudePath()),
+  );
+
+  ipcMain.handle("claudeCode:signIn", async (): Promise<ClaudeCodeStatus> => {
+    const status = await currentStatus(savedClaudePath());
+    if (status.install.state === "found") {
+      await signIn(status.install.path);
+    }
+    return currentStatus(savedClaudePath());
+  });
+
+  ipcMain.handle(
+    "claudeCode:chooseBinary",
+    async (event): Promise<ClaudeCodeStatus> => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      if (!win) return currentStatus(savedClaudePath());
+      const result = await dialog.showOpenDialog(win, {
+        title: "Choose the Claude Code program",
+        // noResolveAliases: on macOS the dialog would otherwise resolve a
+        // symlink, turning an nvm or npm `claude` into its cli.js.
+        properties: ["openFile", "showHiddenFiles", "noResolveAliases"],
+      });
+      const file = result.filePaths[0];
+      if (result.canceled || !file) return currentStatus(savedClaudePath());
+      if ((await readVersion(file)) === null) {
+        throw new IpcValidationError("That file isn't Claude Code.");
+      }
+      if (!writeSettings({ ...readSettings(), claude_code_path: file })) {
+        throw new IpcValidationError("Couldn't save that choice.");
+      }
+      return currentStatus(file);
+    },
+  );
+
+  ipcMain.handle("claudeCode:openInstallGuide", async (): Promise<void> => {
+    await shell.openExternal(CLAUDE_CODE_INSTALL_GUIDE_URL);
+  });
+
+  // Starts a run and returns once it is started; events stream to the asking
+  // window on `claudeCode:event:<subId>`. The run is stopped if that window closes.
+  ipcMain.handle(
+    "claudeCode:ask",
+    async (event, rawSubId: unknown, rawRequest: unknown): Promise<void> => {
+      const subId = assertSubId(rawSubId);
+      const request = assertClaudeCodeAskRequest(rawRequest);
+      const win = BrowserWindow.fromWebContents(event.sender);
+      if (!win) return;
+
+      const onClosed = () => {
+        void claudeRunner.stop(subId);
+      };
+      win.once("closed", onClosed);
+      void claudeRunner
+        .ask({
+          ...request,
+          subId,
+          savedPath: savedClaudePath(),
+          onEvent: (e) => {
+            if (!win.isDestroyed()) {
+              win.webContents.send(`claudeCode:event:${subId}`, e);
+            }
+          },
+        })
+        .finally(() => {
+          win.removeListener("closed", onClosed);
+        });
+    },
+  );
+
+  ipcMain.handle(
+    "claudeCode:stop",
+    async (_event, rawSubId: unknown): Promise<void> => {
+      await claudeRunner.stop(assertSubId(rawSubId));
     },
   );
 

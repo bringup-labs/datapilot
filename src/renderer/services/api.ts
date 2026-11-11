@@ -13,6 +13,7 @@ import type {
   KGraphEdge,
   SessionStatus,
 } from "@shared/types";
+import type { ClaudeAuthMethod } from "@shared/ipc";
 
 // mockData import removed — all data now comes from the FastAPI backend
 
@@ -319,19 +320,30 @@ export async function clearAllSessions(): Promise<{
   return del<{ status: string; message: string }>("/api/sessions");
 }
 
+/** One saved chat message, as `GET /api/sessions/{id}/messages` returns it. */
+export interface ChatHistoryRow {
+  role: string;
+  content: string;
+  created_at: string | null;
+  findings?: unknown[] | null;
+  causal?: unknown[] | null;
+  plan?: unknown[] | null;
+  /** Assistant rows only: which engine answered. */
+  answered_by?: "claude_code" | "datapilot" | null;
+  verified?: boolean | null;
+  flagged_log_ids?: string[];
+  claude_code_usage?: {
+    model: string;
+    auth_method: ClaudeAuthMethod;
+    tool_calls: number;
+    est_cost_usd: number;
+  } | null;
+}
+
 export async function getChatMessages(
   sessionId: string,
-): Promise<
-  Array<{
-    role: string;
-    content: string;
-    created_at: string | null;
-    findings?: any[];
-    causal?: any[];
-    plan?: any[];
-  }>
-> {
-  return get(`/api/sessions/${sessionId}/messages`);
+): Promise<ChatHistoryRow[]> {
+  return get<ChatHistoryRow[]>(`/api/sessions/${sessionId}/messages`);
 }
 
 export async function testApiKey(

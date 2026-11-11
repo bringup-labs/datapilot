@@ -9,55 +9,12 @@ endpoint's own DB write (no parser / embedding / network I/O).
 """
 from __future__ import annotations
 
-import pytest
-import pytest_asyncio
-from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+import asyncio
 
-from app.main import app as fastapi_app
-from app.db_sqlite import Base, get_db
-import app.api.sessions as sessions_mod
-import app.models  # noqa: F401  (ensures ORM tables register against Base)
+from sqlalchemy import func, select
 
-
-# ── Isolated in-memory DB wired into the app via dependency override ────────
-
-
-@pytest_asyncio.fixture
-async def db_client(monkeypatch):
-    """Yield a TestClient backed by a fresh in-memory SQLite for each test."""
-    # A single shared in-memory connection (StaticPool keeps one connection so
-    # the schema created here is visible to request handlers).
-    from sqlalchemy.pool import StaticPool
-
-    engine = create_async_engine(
-        "sqlite+aiosqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    TestSession = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    async def _override_get_db():
-        async with TestSession() as session:
-            yield session
-
-    fastapi_app.dependency_overrides[get_db] = _override_get_db
-
-    # Stub the background ingestion task so `create` does no parser/network I/O.
-    async def _noop_ingestion(session_id, filepath):
-        return None
-
-    monkeypatch.setattr(sessions_mod, "run_ingestion", _noop_ingestion)
-
-    client = TestClient(fastapi_app)
-    try:
-        yield client
-    finally:
-        fastapi_app.dependency_overrides.pop(get_db, None)
-        await engine.dispose()
+from app.agent.turn_store import turn_store
+from app.models import ChatMessageRecord, SessionCostRecord
 
 
 # ── health ─────────────────────────────────────────────────────────────────
@@ -204,6 +161,37 @@ def test_delete_all_sessions_clears_everything(db_client):
     assert db_client.get("/api/sessions").json() == []
 
 
+async def _seed_chat_and_cost(factory, sid):
+    async with factory() as db:
+        db.add_all([
+            ChatMessageRecord(session_id=sid, role="user", content="q"),
+            ChatMessageRecord(session_id=sid, role="assistant", content="a"),
+            SessionCostRecord(session_id=sid, turn_index=0, tokens_in=1, tokens_out=1, est_cost_usd=0.0),
+        ])
+        await db.commit()
+
+
+async def _row_counts(factory):
+    async with factory() as db:
+        chats = (await db.execute(select(func.count()).select_from(ChatMessageRecord))).scalar_one()
+        costs = (await db.execute(select(func.count()).select_from(SessionCostRecord))).scalar_one()
+    return chats, costs
+
+
+def test_delete_all_sessions_removes_chat_and_cost_rows(db_client, db_session_factory):
+    sid = db_client.post("/api/sessions/create", json={"filepath": "a.mcap"}).json()["session_id"]
+    asyncio.run(_seed_chat_and_cost(db_session_factory, sid))
+    assert db_client.delete("/api/sessions").status_code == 200
+    assert asyncio.run(_row_counts(db_session_factory)) == (0, 0)
+
+
+def test_delete_session_removes_chat_and_cost_rows(db_client, db_session_factory):
+    sid = db_client.post("/api/sessions/create", json={"filepath": "a.mcap"}).json()["session_id"]
+    asyncio.run(_seed_chat_and_cost(db_session_factory, sid))
+    assert db_client.delete(f"/api/sessions/{sid}").status_code == 200
+    assert asyncio.run(_row_counts(db_session_factory)) == (0, 0)
+
+
 # ── status-gated sub-resources (no ingestion -> status stays "processing") ──
 
 
@@ -280,3 +268,15 @@ def test_mcp_toggle_flips_and_restores(db_client):
 def test_mcp_toggle_unknown_worker_404(db_client):
     resp = db_client.post("/api/mcp/servers/not_real/toggle")
     assert resp.status_code == 404
+
+
+def test_deleting_a_session_discards_its_open_turns(db_client):
+    sid = db_client.post("/api/sessions/create", json={"filepath": "a.mcap"}).json()["session_id"]
+    tid = turn_store.create(sid)
+    db_client.delete(f"/api/sessions/{sid}")
+    assert not turn_store.exists(sid, tid)
+
+def test_clear_all_discards_every_open_turn(db_client):
+    turn_store.create("x")
+    db_client.delete("/api/sessions")
+    assert len(turn_store) == 0

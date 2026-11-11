@@ -2,12 +2,13 @@ import { useEffect, useRef, useState, type JSX } from "react";
 import { Icon } from "@renderer/components/Icon";
 import { useChatStore } from "@renderer/stores/chat";
 import { useSessionStore } from "@renderer/stores/session";
-import { useSettingsStore } from "@renderer/stores/settings";
-import { useUIStore } from "@renderer/stores/ui";
 import { ChatMessage } from "./ChatMessage";
 import { ContextChips } from "./ContextChips";
 import { CommandBar } from "./CommandBar";
+import { ConnectBanner } from "./ConnectBanner";
+import { EngineMenu } from "./EngineMenu";
 import * as api from "@renderer/services/api";
+import { messageFromHistoryRow } from "@renderer/lib/chatMapping";
 import type { SessionMeta } from "@shared/types";
 
 function parseUTCDate(dateStr: string): Date {
@@ -44,6 +45,7 @@ export function CopilotPanel(): JSX.Element {
   const streaming = useChatStore((s) => s.streaming);
   const clearMessages = useChatStore((s) => s.clearMessages);
   const setMessages = useChatStore((s) => s.setMessages);
+  const showSession = useChatStore((s) => s.showSession);
   const {
     status,
     sessionId,
@@ -52,8 +54,6 @@ export function CopilotPanel(): JSX.Element {
     pendingPath,
     setPendingSessionId,
   } = useSessionStore();
-  const { apiKeys, defaultProvider, defaultModel } = useSettingsStore();
-  const { setScreen, setSettingsSectionTarget } = useUIStore();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Track the session ID that was resumed from history so we can reload its
@@ -88,13 +88,12 @@ export function CopilotPanel(): JSX.Element {
     return "Building knowledge graph...";
   };
 
-  const showWarningBanner =
-    defaultProvider !== "ollama" && !apiKeys[defaultProvider];
-
-  // Clear chat messages when session changes.
+  // Clear the chat when the session changes, but not when this panel remounts
+  // after a screen switch: the chat, and an answer still streaming, stay. An
+  // answer for the old bag stops streaming here and saves to its own bag.
   useEffect(() => {
-    clearMessages();
-  }, [sessionId, clearMessages]);
+    showSession(sessionId);
+  }, [sessionId, showSession]);
 
   // After a session resumed from history is ready, load its chat history.
   useEffect(() => {
@@ -107,13 +106,7 @@ export function CopilotPanel(): JSX.Element {
       api.getChatMessages(sessionId).then((rows) => {
         if (rows.length === 0) return;
         const loaded = rows.map((r, i) => ({
-          id: `hist-${i}`,
-          role: r.role as "user" | "assistant",
-          text: r.role !== "assistant" ? r.content : undefined,
-          summary: r.role === "assistant" ? r.content : undefined,
-          findings: r.findings || undefined,
-          causal: r.causal || undefined,
-          plan: r.plan || undefined,
+          ...messageFromHistoryRow(r, i),
           time: r.created_at
             ? parseUTCDate(r.created_at).toLocaleTimeString()
             : undefined,
@@ -157,7 +150,7 @@ export function CopilotPanel(): JSX.Element {
   };
 
   // Auto-scroll to bottom on new messages and on every streamed update.
-  // The store replaces the `messages` array on each updateLastMessage, so
+  // The store replaces the `messages` array on each streamed update, so
   // depending on `messages` (not just its length) follows token streaming too.
   // Only stick to the bottom when the user is already near it — if they've
   // scrolled up to read earlier messages, don't yank them back down.
@@ -169,9 +162,6 @@ export function CopilotPanel(): JSX.Element {
       el.scrollTop = el.scrollHeight;
     }
   }, [messages, streaming]);
-
-  const modelLabel =
-    (defaultModel || "").trim() || `${defaultProvider} default`;
 
   const totalIn = messages.reduce(
     (acc, m) => acc + (m.usage?.tokens_in || 0),
@@ -220,23 +210,7 @@ export function CopilotPanel(): JSX.Element {
         >
           Copilot
         </span>
-        <span
-          className="pill sm ghost mono"
-          style={{ maxWidth: 170, minWidth: 0 }}
-          title={modelLabel}
-        >
-          <span
-            style={{
-              display: "block",
-              maxWidth: "100%",
-              overflow: "hidden",
-              whiteSpace: "nowrap",
-              textOverflow: "ellipsis",
-            }}
-          >
-            {modelLabel}
-          </span>
-        </span>
+        <EngineMenu />
         {totalTokens > 0 && (
           <span
             className="pill sm ghost mono"
@@ -467,100 +441,7 @@ export function CopilotPanel(): JSX.Element {
         )}
       </div>
 
-      {/* Model Connection Warning Banner */}
-      {showWarningBanner && (
-        <div
-          style={{
-            margin: "12px 14px 4px 14px",
-            padding: "12px",
-            borderRadius: "8px",
-            background: "var(--color-warn-bg)",
-            border: "1px solid var(--color-warn-border)",
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-            boxShadow: "var(--shadow-sm)",
-            animation: "fadeIn 0.3s ease-out",
-            flexShrink: 0,
-          }}
-        >
-          <div className="row gap-2" style={{ alignItems: "flex-start" }}>
-            <div
-              style={{
-                color: "var(--color-warn-text)",
-                marginTop: 2,
-                flexShrink: 0,
-              }}
-            >
-              <Icon.Sparkles size={16} />
-            </div>
-            <div className="col gap-1" style={{ flex: 1, minWidth: 0 }}>
-              <span
-                style={{
-                  fontSize: 12,
-                  fontWeight: 600,
-                  color: "var(--color-text-0)",
-                }}
-              >
-                AI Model Not Connected
-              </span>
-              <span
-                style={{
-                  fontSize: 11,
-                  color: "var(--color-text-2)",
-                  lineHeight: 1.4,
-                }}
-              >
-                Please configure your{" "}
-                <b>
-                  {defaultProvider === "google"
-                    ? "Gemini (Google)"
-                    : defaultProvider === "anthropic"
-                      ? "Claude (Anthropic)"
-                      : defaultProvider === "openai"
-                        ? "OpenAI"
-                        : defaultProvider === "nvidia"
-                          ? "NVIDIA NIM"
-                          : "Custom"}
-                </b>{" "}
-                API key in settings to enable the Copilot.
-              </span>
-            </div>
-          </div>
-          <div className="row" style={{ justifyContent: "flex-end" }}>
-            <button
-              className="btn sm"
-              style={{
-                background: "transparent",
-                color: "var(--color-warn-text)",
-                border: "1px solid var(--color-warn-border)",
-                borderRadius: "6px",
-                fontSize: 10.5,
-                padding: "3px 8px",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-                fontWeight: 600,
-                transition: "filter 0.15s ease, transform 0.15s ease",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.filter = "brightness(1.06)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.filter = "none";
-              }}
-              onClick={() => {
-                setSettingsSectionTarget("models");
-                setScreen("settings");
-              }}
-            >
-              <Icon.Settings size={11} />
-              Open Settings
-            </button>
-          </div>
-        </div>
-      )}
+      <ConnectBanner />
 
       {/* Context chips */}
       <ContextChips />

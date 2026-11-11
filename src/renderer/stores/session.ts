@@ -13,6 +13,8 @@ interface SessionState {
   pendingPath: string | null;
   pendingSessionId: string | null;
   sessionId: string | null;
+  /** The bag path the current session was created from; null for one resumed from history. */
+  loadedPath: string | null;
   status: SessionStatus;
   meta: SessionMeta | null;
   timeline: TimelineEvent[];
@@ -32,6 +34,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   pendingPath: null,
   pendingSessionId: null,
   sessionId: null,
+  loadedPath: null,
   status: "idle",
   meta: null,
   timeline: [],
@@ -57,6 +60,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   clearSession: () =>
     set({
       sessionId: null,
+      loadedPath: null,
       status: "idle",
       meta: null,
       timeline: [],

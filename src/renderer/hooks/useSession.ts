@@ -15,31 +15,25 @@ export function useSession(pendingPath: string | null): void {
   const { pendingSessionId, setSession, setStatus, setTabData, clearSession } =
     useSessionStore();
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Refs (not module-level vars) track the in-flight request within this hook
-  // instance, avoiding stale-closure issues across mount/unmount cycles.
-  const pathRef = useRef<string | null>(null);
-  const sessionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!pendingPath && !pendingSessionId) return;
 
-    // No-op if already ready for this path or session
+    // No-op if the store already holds this bag or session, ready. The guard
+    // reads the store, not this hook's refs, because the Copilot remounts
+    // after every screen switch: loading again would create a new session and
+    // clear its chat, including an answer still streaming.
+    const loaded = useSessionStore.getState();
     if (
-      pendingPath &&
-      pendingPath === pathRef.current &&
-      useSessionStore.getState().status === "ready"
-    )
-      return;
-    if (
-      pendingSessionId &&
-      pendingSessionId === sessionIdRef.current &&
-      useSessionStore.getState().status === "ready"
+      loaded.status === "ready" &&
+      (pendingPath
+        ? loaded.loadedPath === pendingPath
+        : loaded.sessionId === pendingSessionId)
     )
       return;
 
-    pathRef.current = pendingPath;
-    sessionIdRef.current = pendingSessionId;
     clearSession();
+    useSessionStore.setState({ loadedPath: pendingPath });
     setStatus(pendingPath ? "creating" : "processing");
 
     let cancelled = false;

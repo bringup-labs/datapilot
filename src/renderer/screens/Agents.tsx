@@ -2,6 +2,8 @@ import { useState, useEffect, type JSX } from "react";
 import { Icon } from "@renderer/components/Icon";
 import { Toggle } from "@renderer/components/ui";
 import { useSettingsStore } from "@renderer/stores/settings";
+import { useUIStore } from "@renderer/stores/ui";
+import { ClaudeCodeToolsRow } from "./agents/ClaudeCodeToolsRow";
 import {
   fetchAgentModels,
   setAgentModel,
@@ -601,12 +603,22 @@ export function Agents(): JSX.Element {
   const [agents, setAgents] = useState<AgentDef[]>(INITIAL_AGENTS);
   const [mcps, setMcps] = useState<MCPDef[]>(INITIAL_MCP);
   const [showAdd, setShowAdd] = useState(false);
-  const [section, setSection] = useState<"agents" | "mcp">("agents");
+  const agentsSectionTarget = useUIStore((s) => s.agentsSectionTarget);
+  const setAgentsSectionTarget = useUIStore((s) => s.setAgentsSectionTarget);
+  const [section, setSection] = useState<"agents" | "mcp">(
+    agentsSectionTarget ?? "agents",
+  );
   const [routing, setRouting] = useState<"auto" | "parallel" | "manual">(
     "auto",
   );
   const [agentOverrides, setAgentOverrides] = useState<Record<string, string>>({});
   const defaultModel = useSettingsStore((s) => s.defaultModel);
+
+  useEffect(() => {
+    if (!agentsSectionTarget) return;
+    setSection(agentsSectionTarget);
+    setAgentsSectionTarget(null);
+  }, [agentsSectionTarget, setAgentsSectionTarget]);
 
   useEffect(() => {
     fetchAgentModels()
@@ -840,6 +852,7 @@ export function Agents(): JSX.Element {
               className="panel"
               style={{ overflow: "hidden", marginBottom: 18 }}
             >
+              <ClaudeCodeToolsRow />
               {mcps.map((m) => (
                 <MCPRow key={m.id} m={m} onToggle={handleMCPToggle} />
               ))}

@@ -153,4 +153,61 @@ describe("useChatStore", () => {
       ]);
     });
   });
+
+  // The answer in flight lives here, outside the Copilot's components, so a
+  // screen switch can't end it. Replacing the chat detaches it: its late events
+  // are dropped, and it no longer counts as streaming.
+  describe("the answer in flight", () => {
+    const handle = { abort: () => undefined };
+
+    function streamingAnswer(): void {
+      const s = useChatStore.getState();
+      s.addMessage(msg("q", { role: "user", text: "why?" }));
+      s.addMessage(msg("a"));
+      s.setAnswer({ assistantId: "a", sessionId: "sess-1", handle });
+      s.setStreaming(true);
+    }
+
+    it("is kept until replaced", () => {
+      streamingAnswer();
+      expect(useChatStore.getState().answer).toEqual({ assistantId: "a", sessionId: "sess-1", handle });
+    });
+
+    it("keeps the chat and the answer when the same bag is shown again (the Copilot remounted)", () => {
+      useChatStore.getState().showSession("sess-1");
+      streamingAnswer();
+      useChatStore.getState().showSession("sess-1");
+      const s = useChatStore.getState();
+      expect(s.messages.map((m) => m.id)).toEqual(["q", "a"]);
+      expect(s.answer?.assistantId).toBe("a");
+      expect(s.streaming).toBe(true);
+    });
+
+    it.each([
+      ["another bag is shown", () => useChatStore.getState().showSession("sess-2")],
+      ["the chat is cleared", () => useChatStore.getState().clearMessages()],
+      ["the chat is replaced", () => useChatStore.getState().setMessages([msg("hist-0")])],
+    ])("is detached, and streaming ends, when %s", (_when, replace) => {
+      useChatStore.getState().showSession("sess-1");
+      streamingAnswer();
+      replace();
+      const s = useChatStore.getState();
+      expect(s.answer).toBeNull();
+      expect(s.streaming).toBe(false);
+      expect(s.messages.some((m) => m.id === "a")).toBe(false);
+    });
+
+    it("showSession records the bag whose chat is shown", () => {
+      useChatStore.getState().showSession("sess-2");
+      expect(useChatStore.getState().sessionId).toBe("sess-2");
+    });
+  });
+
+  it("requestResend stores the question and clearResend clears it", () => {
+    expect(useChatStore.getState().pendingResend).toBeNull();
+    useChatStore.getState().requestResend("why?");
+    expect(useChatStore.getState().pendingResend).toBe("why?");
+    useChatStore.getState().clearResend();
+    expect(useChatStore.getState().pendingResend).toBeNull();
+  });
 });

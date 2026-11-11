@@ -6,9 +6,22 @@ import { useChat } from "@renderer/hooks/useChat";
 export function CommandBar(): JSX.Element {
   const [input, setInput] = useState("");
   const streaming = useChatStore((s) => s.streaming);
+  const pendingResend = useChatStore((s) => s.pendingResend);
   const { send, stop } = useChat();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const prevStreaming = useRef(streaming);
+
+  // A next-step button (Retry, Answer with DataPilot's agents) queues its
+  // question; send it once nothing is streaming. The live store is read and
+  // cleared first, so the question goes exactly once, even when React runs
+  // this effect twice for one render.
+  useEffect(() => {
+    const chat = useChatStore.getState();
+    const question = chat.pendingResend;
+    if (!question || chat.streaming) return;
+    chat.clearResend();
+    send(question);
+  }, [pendingResend, streaming, send]);
 
   // Return focus to the input once the assistant finishes responding, so the
   // user can keep typing without reaching for the mouse. The textarea is

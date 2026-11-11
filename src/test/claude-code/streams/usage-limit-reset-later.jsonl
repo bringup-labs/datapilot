@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "s1", "mcp_servers": [{"name": "datapilot", "status": "connected"}], "model": "claude-sonnet-4-5-20250929"}
+{"type": "assistant", "error": "rate_limit", "message": {"role": "assistant", "content": [{"type": "text", "text": "You've hit your limit"}]}}
+{"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": 1767297600}}
+{"type": "result", "subtype": "success", "is_error": true, "result": "You've hit your limit", "num_turns": 4, "total_cost_usd": 0.0123, "usage": {"input_tokens": 1000, "output_tokens": 200, "cache_read_input_tokens": 500}}

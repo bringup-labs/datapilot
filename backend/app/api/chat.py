@@ -99,6 +99,23 @@ def _session_summary_string(record: SessionRecord) -> str:
     )
 
 
+def session_overview(record: SessionRecord) -> dict[str, Any]:
+    """The facts ``_session_summary_string`` gives DataPilot's agents, as data."""
+    topics: list[dict[str, Any]] = []
+    if record.topics_json:
+        try:
+            topics = [{"name": t["name"], "type": t.get("type", "?")} for t in json.loads(record.topics_json)[:15]]
+        except Exception:
+            topics = []
+    return {
+        "filename": record.filename,
+        "robot": record.robot_name or "unknown",
+        "duration_s": record.duration_seconds or 0,
+        "total_messages": record.total_messages or 0,
+        "topics": topics,
+    }
+
+
 @router.post("/{session_id}/chat")
 async def chat(
     session_id: str,
@@ -383,17 +400,49 @@ async def get_messages(
         .order_by(ChatMessageRecord.id.asc())
     )
     rows = rows_res.scalars().all()
-    return [
-        {
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        ext = _external_agent_event(r.execution_steps) if r.role == "assistant" else None
+        if r.role != "assistant":
+            answered_by = None
+        else:
+            answered_by = "claude_code" if ext else "datapilot"
+        out.append({
             "role": r.role,
             "content": r.content,
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "findings": json.loads(r.findings_json) if r.findings_json else None,
             "causal": json.loads(r.causal_json) if r.causal_json else None,
             "plan": json.loads(r.plan_json) if r.plan_json else None,
-        }
-        for r in rows
-    ]
+            "answered_by": answered_by,
+            "verified": ext.get("verified") if ext else None,
+            "flagged_log_ids": (ext.get("flagged_log_ids") or []) if ext else [],
+            "claude_code_usage": (
+                {
+                    "model": ext.get("model", ""),
+                    "auth_method": ext.get("auth_method", "none"),
+                    "tool_calls": ext.get("tool_calls", 0),
+                    "est_cost_usd": ext.get("est_cost_usd", 0.0),
+                }
+                if ext
+                else None
+            ),
+        })
+    return out
+
+
+def _external_agent_event(execution_steps: str | None) -> dict | None:
+    """The first audit event, when it records a turn answered by Claude Code."""
+    if not execution_steps:
+        return None
+    try:
+        events = json.loads(execution_steps)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(events, list) and events and isinstance(events[0], dict):
+        if events[0].get("step_kind") == "external_agent":
+            return events[0]
+    return None
 
 
 async def _persist_turn(
@@ -402,6 +451,8 @@ async def _persist_turn(
     user_msg: str,
     envelope: dict[str, Any],
     turn_started: float,
+    *,
+    record_cost: bool = True,
 ) -> None:
     """Save user + assistant turns to chat_messages, usage to session_costs."""
     # User turn
@@ -420,7 +471,9 @@ async def _persist_turn(
     ))
     # Cost row
     usage = envelope.get("usage") or {}
-    if usage:
+    # Claude Code turns pass record_cost=False: that table feeds DataPilot's own
+    # per-session token cap, and Claude Code's usage isn't DataPilot's spend.
+    if usage and record_cost:
         # Count existing turns for turn_index.
         existing = await db.execute(
             select(SessionCostRecord).where(SessionCostRecord.session_id == session_id)
