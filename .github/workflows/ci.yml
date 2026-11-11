@@ -67,12 +67,24 @@ jobs:
         # The Linux mcap.duckdb_extension (query_mcap tool) dynamically links
         # libprotobuf.so.23 (protobuf 3.12, Ubuntu jammy soname), which the
         # runner doesn't ship. Graft it from the jammy .deb with a pinned
-        # sha256 — identical to the approach in backend/Dockerfile.
+        # sha256 — identical to the approach in backend/Dockerfile, including
+        # the fallback mirrors for when Canonical's archive is unreachable.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends liblz4-1 curl ca-certificates
-          curl -fsSL https://archive.ubuntu.com/ubuntu/pool/main/p/protobuf/libprotobuf23_3.12.4-1ubuntu7_amd64.deb -o /tmp/libprotobuf23.deb
-          echo "8c9942e9130ab7c343438b1b81603bdd86509d7e2a9cc877ae35a998dbf5e0a8  /tmp/libprotobuf23.deb" | sha256sum -c -
+          deb=libprotobuf23_3.12.4-1ubuntu7_amd64.deb
+          for mirror in https://archive.ubuntu.com/ubuntu https://mirrors.ocf.berkeley.edu/ubuntu https://mirror.us.leaseweb.net/ubuntu; do
+            if curl -fsSL --connect-timeout 20 --max-time 120 "$mirror/pool/main/p/protobuf/$deb" -o /tmp/libprotobuf23.deb \
+              && echo "8c9942e9130ab7c343438b1b81603bdd86509d7e2a9cc877ae35a998dbf5e0a8  /tmp/libprotobuf23.deb" | sha256sum -c -; then
+              break
+            fi
+            echo "Couldn't get $deb from $mirror"
+            rm -f /tmp/libprotobuf23.deb
+          done
+          if [ ! -f /tmp/libprotobuf23.deb ]; then
+            echo "::error::Couldn't download $deb from any mirror"
+            exit 1
+          fi
           dpkg-deb -x /tmp/libprotobuf23.deb /tmp/pb
           sudo cp -a /tmp/pb/usr/lib/*/libprotobuf.so.23* /usr/lib/
           sudo ldconfig
