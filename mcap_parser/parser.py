@@ -473,6 +473,7 @@ def _parse_db3(filepath: str) -> dict[str, Any]:
     log_connections = set()
     tf_connections = set()
     diag_connections = set()
+    messages_read = 0
 
     try:
         with Reader(filepath) as reader:
@@ -493,6 +494,7 @@ def _parse_db3(filepath: str) -> dict[str, Any]:
             decode_topics = log_connections | tf_connections | diag_connections
 
             for connection, timestamp_ns, rawdata in reader.messages():
+                messages_read += 1
                 topic = connection.topic
                 timestamp = timestamp_ns / 1e9
 
@@ -567,6 +569,10 @@ def _parse_db3(filepath: str) -> dict[str, Any]:
                         })
 
     except Exception as exc:
+        if not messages_read:
+            # Nothing came out of the bag, so this isn't a partial parse.
+            # Fail, instead of reporting an empty bag as parsed (#86).
+            raise
         warnings.append(f"DB3 reader failed: {exc}")
         logger.exception("DB3 parse error for %s", filepath)
 

@@ -62,6 +62,15 @@ def _extract_sensor_info(topic_name: str, msg_type: str) -> dict[str, str] | Non
 
 logger = logging.getLogger(__name__)
 
+
+class BagParseError(Exception):
+    """The mcap-parser service read the bag but couldn't parse it (#86).
+
+    Raised instead of falling back to the inline parser, which would only
+    repeat the failure. run_ingestion then marks the session as failed.
+    """
+
+
 # The Docker container mounts the host home directory at this path (read-only).
 # Set via the DATAPILOT_HOST_MOUNT env var in dockerOrchestrator.ts.
 _HOST_MOUNT = os.environ.get("DATAPILOT_HOST_MOUNT", "")
@@ -422,6 +431,7 @@ class IngestionParser:
         Tries the dedicated mcap-parser service first (multi-encoding support,
         including Foxglove protobuf). Falls back to the inline CDR-only parser
         when the service is unreachable (e.g. during tests or on first boot).
+        Raises BagParseError when the service reports the bag can't be parsed.
 
         If the filename matches a demo dataset, returns the mock data directly.
         """
@@ -539,8 +549,10 @@ class IngestionParser:
     async def _parse_via_service(self, resolved_filepath: str) -> Dict[str, Any] | None:
         """POST the resolved file path to the mcap-parser service.
 
-        Returns the parsed dict on success, None if the service is unavailable
-        or returns an error (so the caller can fall back to inline parsing).
+        Returns the parsed dict on success. Raises BagParseError when the
+        service answers with a `parse_error`. Returns None for anything else,
+        such as the service being unreachable or rejecting the path, so the
+        caller falls back to inline parsing.
         """
         import httpx
         service_url = os.environ.get("MCAP_PARSER_URL", "http://datapilot-mcap-parser:8100")
@@ -550,21 +562,30 @@ class IngestionParser:
                     f"{service_url}/parse",
                     json={"filepath": resolved_filepath},
                 )
-                resp.raise_for_status()
-                data = resp.json()
-                if not data.get("ok", True):  # service returned an error envelope
-                    logger.warning(
-                        "mcap-parser returned error for %s: %s",
-                        resolved_filepath, data.get("error"),
-                    )
-                    return None
-                return data
         except Exception as exc:
             logger.warning(
                 "mcap-parser service unavailable (%s) — falling back to inline parser",
                 exc,
             )
             return None
+
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        if resp.is_success and isinstance(data, dict) and data.get("ok", True):
+            return data
+
+        # A typed error is {"code", "message", "retryable"} (#86). An older
+        # parser service sends a bare string with HTTP 200.
+        error = data.get("error") if isinstance(data, dict) else None
+        if isinstance(error, dict) and error.get("code") == "parse_error":
+            raise BagParseError(f"mcap-parser couldn't parse the bag: {error.get('message')}")
+        logger.warning(
+            "mcap-parser returned an error for %s (HTTP %s): %s — falling back to inline parser",
+            resolved_filepath, resp.status_code, error,
+        )
+        return None
 
     def _parse_mcap(self, filepath: str) -> Dict[str, Any]:
         # Inline CDR-only MCAP parser — fallback when mcap-parser service is down.
