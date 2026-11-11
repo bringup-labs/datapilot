@@ -18,6 +18,48 @@ import { getMcpToken } from "./claudeCode/mcpToken";
 
 const execAsync = promisify(exec);
 
+/** How to build one service image from this checkout. */
+interface ImageBuild {
+  context: string;
+  dockerfile?: string;
+}
+
+/** The `services` of a compose file, as far as building images goes. */
+type ComposeServices = Record<
+  string,
+  { build?: string | { context?: string; dockerfile?: string } } | null | undefined
+>;
+
+/**
+ * Says which image failed to download and why, in words the Setup screen
+ * shows as they are. Docker, not DataPilot, talks to the registry, so the
+ * reason comes from the daemon's status code and error text.
+ */
+export function describePullFailure(image: string, err: unknown): string {
+  const e = err as
+    | { statusCode?: number; message?: string; json?: { message?: string } | null }
+    | undefined;
+  const text = e?.json?.message ?? e?.message ?? String(err);
+  const lower = text.toLowerCase();
+  const prefix = `DataPilot couldn't download ${image}`;
+  // A registry answers "denied" both for private images and for images that
+  // were never published, and doesn't say which.
+  if (e?.statusCode === 401 || e?.statusCode === 403 || /denied|unauthorized/.test(lower)) {
+    return `${prefix}: the registry refused access, so the image is private or hasn't been published.`;
+  }
+  if (e?.statusCode === 404 || lower.includes("manifest unknown")) {
+    return `${prefix}: the registry has no image with that tag.`;
+  }
+  if (
+    /dial tcp|no such host|tls handshake|i\/o timeout|deadline exceeded|network is unreachable|connection reset/.test(
+      lower,
+    )
+  ) {
+    return `${prefix}: Docker couldn't reach the registry. Check your internet connection, then retry.`;
+  }
+  return `${prefix}: ${text}`;
+}
+
 class DockerOrchestrator {
   private docker: Docker;
   private socketPath: string;
@@ -418,13 +460,50 @@ class DockerOrchestrator {
   }
 
   /**
-   * Ensures required images exist, pulling or building them if missing in parallel.
+   * In development, how to build each service image from this checkout. The
+   * settings come from docker-compose.override.yml, the file `docker compose
+   * build` also reads, and from any `build` in docker-compose.yml. A packaged
+   * app has no source to build from, and a run pinned to published images
+   * with DATAPILOT_IMAGE_TAG downloads them, so neither builds.
+   */
+  private getDevBuilds(composeData: {
+    services?: ComposeServices;
+  }): Record<string, ImageBuild> {
+    if (app.isPackaged || process.env.DATAPILOT_IMAGE_TAG?.trim()) return {};
+    const builds: Record<string, ImageBuild> = {};
+    const add = (services: ComposeServices | undefined) => {
+      for (const [name, service] of Object.entries(services ?? {})) {
+        const build = service?.build;
+        if (typeof build === "string") {
+          builds[name] = { context: build };
+        } else if (build) {
+          builds[name] = { context: build.context ?? ".", dockerfile: build.dockerfile };
+        }
+      }
+    };
+    add(composeData.services);
+    const overridePath = path.join(
+      path.dirname(this.resolveComposePath()),
+      "docker-compose.override.yml",
+    );
+    if (fs.existsSync(overridePath)) {
+      add(yaml.parse(fs.readFileSync(overridePath, "utf-8"))?.services);
+    }
+    return builds;
+  }
+
+  /**
+   * Ensures every service image exists, in parallel. In development a missing
+   * image is built from this checkout, since `:latest` is never published;
+   * otherwise it is downloaded.
    */
   public async ensureImages(): Promise<void> {
     const composeData = this.getComposeData();
+    const devBuilds = this.getDevBuilds(composeData);
     const images = await this.docker.listImages();
     const existingTags = images.flatMap((img) => img.RepoTags || []);
     const jobs: Promise<void>[] = [];
+    let building = false;
 
     for (const [serviceName, service] of Object.entries<any>(
       composeData.services,
@@ -438,99 +517,101 @@ class DockerOrchestrator {
         continue;
       }
 
-      if (service.build) {
-        console.log(
-          `Building image for service: ${serviceName} (${imageTag})...`,
-        );
-        const buildContextRef = service.build.context || service.build;
-        const buildContext = this.resolveBuildContext(buildContextRef);
-
-        if (!fs.existsSync(buildContext)) {
-          throw Object.assign(
-            new Error(`Build context not found: ${buildContext}`),
-            { dpCode: "image_pull_failed" as DockerErrorCode },
-          );
-        }
-
-        const buildJob = new Promise<void>((resolve, reject) => {
-          const child = spawn("docker", ["build", "-t", imageTag, "."], {
-            cwd: buildContext,
-          });
-
-          child.stdout?.on("data", (data: Buffer) => {
-            process.stdout.write(`[build:${serviceName}] ${data.toString()}`);
-          });
-
-          child.stderr?.on("data", (data: Buffer) => {
-            process.stderr.write(`[build:${serviceName}] ${data.toString()}`);
-          });
-
-          child.on("close", (code) => {
-            if (code === 0) {
-              resolve();
-            } else {
-              reject(
-                Object.assign(
-                  new Error(
-                    `docker build for ${imageTag} exited with code ${code}`,
-                  ),
-                  { dpCode: "image_pull_failed" as DockerErrorCode },
-                ),
-              );
-            }
-          });
-
-          child.on("error", (err) => {
-            reject(
-              Object.assign(err, {
-                dpCode: "image_pull_failed" as DockerErrorCode,
-              }),
-            );
-          });
-        });
-
-        jobs.push(buildJob);
+      const build = devBuilds[serviceName];
+      if (build) {
+        building = true;
+        jobs.push(this.buildImage(serviceName, imageTag, build));
       } else {
-        console.log(`Pulling remote image: ${imageTag}...`);
-        const pullJob = new Promise<void>((resolve, reject) => {
-          this.docker.pull(imageTag, {}, (err: any, stream: any) => {
-            if (err) {
-              return reject(
-                Object.assign(err, {
-                  dpCode: "image_pull_failed" as DockerErrorCode,
-                }),
-              );
-            }
-            this.docker.modem.followProgress(
-              stream,
-              (err2: any) => {
-                if (err2) {
-                  return reject(
-                    Object.assign(err2, {
-                      dpCode: "image_pull_failed" as DockerErrorCode,
-                    }),
-                  );
-                }
-                resolve();
-              },
-              (event: any) => {
-                if (event.status) {
-                  process.stdout.write(
-                    `[pull:${serviceName}] ${event.status} ${event.progress || ""}\n`,
-                  );
-                }
-              },
-            );
-          });
-        });
-
-        jobs.push(pullJob);
+        jobs.push(this.pullImage(serviceName, imageTag));
       }
     }
 
-    if (jobs.length > 0) {
-      await Promise.all(jobs);
+    if (building) {
+      this.setStatus({
+        state: "pending",
+        progress: 30,
+        step: "Building service images from this checkout. The first build takes several minutes…",
+      });
     }
+    await Promise.all(jobs);
+  }
+
+  /** Builds one image with `docker build`, streaming its output to the terminal. */
+  private buildImage(
+    serviceName: string,
+    imageTag: string,
+    build: ImageBuild,
+  ): Promise<void> {
+    const failure = (reason: string) =>
+      Object.assign(
+        new Error(`DataPilot couldn't build ${imageTag} from this checkout: ${reason}`),
+        { dpCode: "image_pull_failed" as DockerErrorCode },
+      );
+    const context = this.resolveBuildContext(build.context);
+    if (!fs.existsSync(context)) {
+      return Promise.reject(failure(`its build folder ${context} doesn't exist.`));
+    }
+
+    console.log(`Building image for service: ${serviceName} (${imageTag})...`);
+    const args = [
+      "build",
+      "-t",
+      imageTag,
+      ...(build.dockerfile ? ["-f", build.dockerfile] : []),
+      ".",
+    ];
+    return new Promise<void>((resolve, reject) => {
+      const child = spawn("docker", args, { cwd: context });
+
+      child.stdout?.on("data", (data: Buffer) => {
+        process.stdout.write(`[build:${serviceName}] ${data.toString()}`);
+      });
+      child.stderr?.on("data", (data: Buffer) => {
+        process.stderr.write(`[build:${serviceName}] ${data.toString()}`);
+      });
+      child.on("close", (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(
+            failure(
+              `docker build exited with code ${code}. The build output is in the terminal running pnpm dev.`,
+            ),
+          );
+        }
+      });
+      child.on("error", (err: NodeJS.ErrnoException) => {
+        reject(
+          failure(err.code === "ENOENT" ? "the docker command isn't on PATH." : err.message),
+        );
+      });
+    });
+  }
+
+  /** Downloads one image, logging Docker's progress to the terminal. */
+  private pullImage(serviceName: string, imageTag: string): Promise<void> {
+    console.log(`Pulling remote image: ${imageTag}...`);
+    const failure = (err: unknown) =>
+      Object.assign(new Error(describePullFailure(imageTag, err)), {
+        cause: err,
+        dpCode: "image_pull_failed" as DockerErrorCode,
+      });
+    return new Promise<void>((resolve, reject) => {
+      this.docker.pull(imageTag, {}, (err: any, stream: any) => {
+        if (err) return reject(failure(err));
+        this.docker.modem.followProgress(
+          stream,
+          (err2: any) => (err2 ? reject(failure(err2)) : resolve()),
+          (event: any) => {
+            if (event.status) {
+              process.stdout.write(
+                `[pull:${serviceName}] ${event.status} ${event.progress || ""}\n`,
+              );
+            }
+          },
+        );
+      });
+    });
   }
 
   /**
@@ -884,7 +965,8 @@ class DockerOrchestrator {
       this.setStatus({
         state: "error",
         code,
-        message: `Stack boot failed: ${message}`,
+        // Image failures are written for the Setup screen, which shows them as they are.
+        message: code === "image_pull_failed" ? message : `Stack boot failed: ${message}`,
       });
     }
   }

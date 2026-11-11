@@ -5,9 +5,10 @@
 # to be invoked manually with `docker compose up`. The desktop app boots and
 # tears down this stack on launch / quit.
 #
-# All images are pulled from GitHub Container Registry (GHCR). To build from
-# source instead, layer the dev override:
-#   docker compose -f docker-compose.yml -f docker-compose.override.yml up --build
+# A packaged app pulls these images from GitHub Container Registry (GHCR),
+# tagged with its version. `:latest` is never published: in development,
+# `pnpm dev` builds any missing image from this checkout using
+# docker-compose.override.yml, which `docker compose build` also reads.
 #
 # Run `docker compose config` to validate this file.
 

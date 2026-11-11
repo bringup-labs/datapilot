@@ -150,7 +150,7 @@ When you load a bag, the parser extracts topics, logs, diagnostics and transform
 2. Remove its Docker images:
 
    ```bash
-   docker rmi $(docker images -q 'ghcr.io/bringup-labs/datapilot-*')
+   docker rmi $(docker images -q 'ghcr.io/*/datapilot-*')
    ```
 
 3. Remove its data: `~/Library/Application Support/DataPilot` on macOS or `~/.config/DataPilot` on Linux. The knowledge graph lives in the Docker volumes `neo4j-data` and `neo4j-logs`. Delete them with `docker volume rm neo4j-data neo4j-logs`, but only if no other project uses volumes with those names. Your bags in `~/datapilot_bags` are never deleted.
@@ -167,7 +167,9 @@ docker compose build
 pnpm dev
 ```
 
-`docker compose build` builds the local services from this checkout. It takes a few minutes the first time. `pnpm dev` then starts the app in development mode. It uses a separate settings profile, so it won't touch an installed copy of DataPilot.
+`docker compose build` builds the local services from this checkout. It takes a few minutes the first time, and if you skip it, `pnpm dev` builds any missing image when it starts. `pnpm dev` then starts the app in development mode. It uses a separate settings profile, so it won't touch an installed copy of DataPilot.
+
+After you change a service, rebuild it with `docker compose build <service>`, then quit the app and run `pnpm dev` again. Quitting removes DataPilot's containers, so the next start uses the new image.
 
 | Command | What it does |
 |---|---|

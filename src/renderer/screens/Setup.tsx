@@ -249,19 +249,10 @@ export function Setup({ status, onRetry }: SetupProps): JSX.Element {
       icon = (
         <Icon.Download size={24} style={{ color: "var(--color-danger)" }} />
       );
+      // The message names the image that failed and why, with what to do about it.
       remediationContent = (
         <div className="flex flex-col gap-2">
-          <p className="text-text-2">
-            The Docker orchestrator was unable to pull{" "}
-            <code className="mono text-xs bg-bg-2 px-1 rounded">
-              neo4j:5-community
-            </code>{" "}
-            or build local images.
-          </p>
-          <p className="text-text-2 font-medium">
-            Please verify you have a stable internet connection and that Docker
-            has registry access.
-          </p>
+          <p className="text-text-2">{message}</p>
         </div>
       );
       break;

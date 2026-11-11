@@ -2,15 +2,17 @@
 # DataPilot – Build & Publish Docker Images to GitHub Container Registry (GHCR)
 # =============================================================================
 #
-# This workflow builds all 7 DataPilot service images and pushes them to
-# ghcr.io/bringup-labs/datapilot-<service>. The Electron desktop app
-# (dockerOrchestrator.ts) and docker-compose.yml reference these images so
-# end-users never have to build from source locally.
+# This workflow builds all 7 DataPilot service images and, for a release,
+# pushes them to ghcr.io/bringup-labs/datapilot-<service>. The packaged
+# desktop app (dockerOrchestrator.ts) downloads the images tagged with its
+# version, so end-users never have to build from source locally.
 #
 # Triggers:
-#   • push to main  →  :<version> + :sha-<commit>
-#   • git tag v*    →  :<version> + :sha-<commit>
-#   • pull request  →  build only (no push) for CI validation
+#   • push to main, pull request  →  build only, to check the images build
+#   • release pipeline (push_images: true)  →  push :<version> + :sha-<commit>
+#
+# :latest is never pushed. In development, `pnpm dev` builds any missing image
+# from the checkout using docker-compose.override.yml.
 #
 # Images are multi-platform (linux/amd64 + linux/arm64).
 
@@ -134,3 +136,25 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # The desktop app downloads images without signing in, so a pushed image
+      # that isn't public breaks every install. GHCR creates new packages as
+      # private, so the first release under a new owner stops here, before the
+      # release is created, until each package is made public.
+      - name: Check ${{ matrix.service }} can be downloaded without signing in
+        if: inputs.push_images || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+        env:
+          IMAGE: ${{ env.IMAGE_PREFIX }}-${{ matrix.image_suffix }}
+          VERSION: ${{ steps.get_version.outputs.version }}
+        run: |
+          repo="${IMAGE#ghcr.io/}"
+          token=$(curl -fs "https://ghcr.io/token?scope=repository:${repo}:pull" | jq -r '.token // empty' || true)
+          http_code=$(curl -s -o /dev/null -w '%{http_code}' --head \
+            -H "Authorization: Bearer ${token}" \
+            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
+            "https://ghcr.io/v2/${repo}/manifests/${VERSION}")
+          if [ "${http_code}" != "200" ]; then
+            echo "::error title=${IMAGE} is not public::Downloading ${IMAGE}:${VERSION} without signing in returned HTTP ${http_code}. On GitHub, open the ${repo#*/} package, then Package settings, and change its visibility to Public. Then re-run this job."
+            exit 1
+          fi
+          echo "${IMAGE}:${VERSION} can be downloaded without signing in."
