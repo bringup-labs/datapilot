@@ -85,29 +85,58 @@ _FOXGLOVE_LEVEL_MAP = {0: "INFO", 1: "DEBUG", 2: "INFO", 3: "WARN", 4: "ERROR", 
 
 # ── Inline TF parser (no backend dependency) ─────────────────────────────────
 
+def _frame_pair(t: Any) -> tuple[Any, Any]:
+    """The (child, parent) frame ids of one transform, from attributes or dict keys."""
+    child = getattr(t, "child_frame_id", None) or (
+        t.get("child_frame_id") if isinstance(t, dict) else None
+    )
+    header = getattr(t, "header", None)
+    parent = (
+        getattr(header, "frame_id", None)
+        if header else
+        (t.get("header", {}).get("frame_id") if isinstance(t, dict) else None)
+    )
+    return child, parent
+
+
 class _TFParser:
     def __init__(self) -> None:
         self.frames: dict[str, str] = {}
+        # Transforms that couldn't be read, reported as a parse warning (#89).
+        self.skipped = 0
 
     def parse(self, msg: Any) -> None:
+        """Record each transform's frames. A transform that isn't shaped like
+        one is skipped and counted, and the rest are still read. Other errors
+        propagate."""
+        transforms = getattr(msg, "transforms", None) or []
+        if not transforms and isinstance(msg, dict):
+            transforms = msg.get("transforms") or []
         try:
-            transforms = getattr(msg, "transforms", None) or []
-            if not transforms and isinstance(msg, dict):
-                transforms = msg.get("transforms", [])
-            for t in transforms:
-                child = getattr(t, "child_frame_id", None) or (
-                    t.get("child_frame_id") if isinstance(t, dict) else None
-                )
-                header = getattr(t, "header", None)
-                parent = (
-                    getattr(header, "frame_id", None)
-                    if header else
-                    (t.get("header", {}).get("frame_id") if isinstance(t, dict) else None)
-                )
+            transforms = list(transforms)
+        except TypeError:
+            self._skip(f"transforms is a {type(transforms).__name__}, not a list")
+            return
+        for t in transforms:
+            try:
+                child, parent = _frame_pair(t)
                 if child and parent:
                     self.frames[child.lstrip("/")] = parent.lstrip("/")
-        except Exception:
-            pass
+            except (AttributeError, TypeError) as exc:
+                self._skip(str(exc))
+
+    def _skip(self, detail: str) -> None:
+        self.skipped += 1
+        logger.debug("Skipping an unreadable TF transform: %s", detail)
+
+    def skipped_warnings(self) -> list[str]:
+        """The parse warning for skipped transforms, if there were any."""
+        if not self.skipped:
+            return []
+        return [
+            f"Skipped {self.skipped} TF transform(s) that couldn't be read, "
+            "so the frame tree may be incomplete."
+        ]
 
     def frames_list(self) -> list[dict[str, str]]:
         return [{"name": c, "parent": p} for c, p in self.frames.items()]
@@ -449,7 +478,7 @@ def _parse_mcap(filepath: str) -> dict[str, Any]:
         "replay": [],
         "sensors": sensors,
         "diagnostics": diagnostics,
-        "parse_warnings": warnings,
+        "parse_warnings": warnings + tf_parser.skipped_warnings(),
     }
 
 
@@ -611,7 +640,7 @@ def _parse_db3(filepath: str) -> dict[str, Any]:
         "replay": [],
         "sensors": sensors,
         "diagnostics": diagnostics,
-        "parse_warnings": warnings,
+        "parse_warnings": warnings + tf_parser.skipped_warnings(),
     }
 
 

@@ -411,10 +411,17 @@ def _derive_anomalies(timeline_events: List[Dict[str, Any]], logs: List[Dict[str
     return anomalies
 
 
-class IngestionParser:
-    def __init__(self):
-        self.tf_parser = TFParser()
+def _warn_about_skipped_transforms(tf_parser: TFParser, filepath: str) -> None:
+    """Log how many of a bag's TF transforms couldn't be read (#89)."""
+    if tf_parser.skipped:
+        logger.warning(
+            "Skipped %d TF transform(s) in %s that couldn't be read, so the frame tree may be incomplete",
+            tf_parser.skipped,
+            os.path.basename(filepath),
+        )
 
+
+class IngestionParser:
     async def parse_bag(self, filepath: str) -> Dict[str, Any]:
         """
         Parses a ROS bag file (.mcap or .db3).
@@ -574,6 +581,7 @@ class IngestionParser:
         from mcap_ros2.reader import read_ros2_messages
         import json
 
+        tf_parser = TFParser()  # one per bag, so frames don't carry over between bags
         logs = []
         topics_dict = {}
         timeline_events = []
@@ -655,7 +663,7 @@ class IngestionParser:
                     })
 
             elif topic in tf_topics:
-                self.tf_parser.parse_tf_message(msg)
+                tf_parser.parse_tf_message(msg)
 
             elif topic in diag_topics:
                 status_list = getattr(msg, "status", None) or []
@@ -688,6 +696,7 @@ class IngestionParser:
                     })
 
         dur = (end_time - start_time) if start_time and end_time else 0.0
+        _warn_about_skipped_transforms(tf_parser, filepath)
 
         # Compute per-topic Hz from real message counts and bag duration.
         total_messages = 0
@@ -720,7 +729,7 @@ class IngestionParser:
             "logs": logs,
             "anomalies": _derive_anomalies(timeline_events, logs),
             "kgraph": {"nodes": [], "edges": []},
-            "frames": self.tf_parser.get_frames_list(),
+            "frames": tf_parser.get_frames_list(),
             "replay": [],
             "sensors": sensors,
             "diagnostics": diagnostics,
@@ -733,6 +742,7 @@ class IngestionParser:
         import json
 
         typestore = get_typestore(Stores.ROS2_HUMBLE)
+        tf_parser = TFParser()  # one per bag, so frames don't carry over between bags
         logs = []
         topics_dict = {}
         diagnostics = []
@@ -812,7 +822,7 @@ class IngestionParser:
                     })
 
                 elif topic in tf_connections:
-                    self.tf_parser.parse_tf_message(msg)
+                    tf_parser.parse_tf_message(msg)
 
                 elif topic in diag_connections:
                     status_list = getattr(msg, "status", None) or []
@@ -845,6 +855,7 @@ class IngestionParser:
                         })
 
         dur = (end_time - start_time) if start_time and end_time else 0.0
+        _warn_about_skipped_transforms(tf_parser, filepath)
 
         # Compute per-topic Hz and total bag message count from real data.
         total_messages = 0
@@ -877,7 +888,7 @@ class IngestionParser:
             "logs": logs,
             "anomalies": [],
             "kgraph": {"nodes": [], "edges": []},
-            "frames": self.tf_parser.get_frames_list(),
+            "frames": tf_parser.get_frames_list(),
             "replay": [],
             "sensors": sensors,
             "diagnostics": diagnostics,

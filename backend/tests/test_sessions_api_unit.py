@@ -23,7 +23,10 @@ from app.models import ChatMessageRecord, SessionCostRecord
 def test_health_endpoint(db_client):
     resp = db_client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok", "phase": "3", "service": "datapilot-backend"}
+    body = resp.json()
+    assert {key: body[key] for key in ("status", "phase", "service")} == {
+        "status": "ok", "phase": "3", "service": "datapilot-backend",
+    }
 
 
 # ── create ─────────────────────────────────────────────────────────────────

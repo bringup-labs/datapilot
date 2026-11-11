@@ -9,12 +9,14 @@ from __future__ import annotations
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.auth import APITokenMiddleware
+from app.services.causal_rules import causal_rules_evaluator
 
 logger = logging.getLogger(__name__)
 
@@ -137,9 +139,19 @@ app.router.routes.append(Route("/mcp", endpoint=MCPEndpoint(), include_in_schema
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    """Liveness probe. The Electron orchestrator polls this on stack boot."""
-    return {"status": "ok", "phase": "3", "service": "datapilot-backend"}
+async def health() -> dict[str, Any]:
+    """Liveness probe. The Electron orchestrator polls this on stack boot.
+
+    `causal_rules` says how many causal rules loaded, and why none did if so:
+    the backend still runs without them, but builds no causal chains (#89).
+    Only a reason code is returned here; the details are in the error log.
+    """
+    return {
+        "status": "ok",
+        "phase": "3",
+        "service": "datapilot-backend",
+        "causal_rules": causal_rules_evaluator.status(),
+    }
 
 
 @app.get("/")

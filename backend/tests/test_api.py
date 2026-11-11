@@ -1,7 +1,18 @@
+from pathlib import Path
+
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 from app.main import app
 from app.db_sqlite import init_db
+from app.services.causal_rules import causal_rules_evaluator
+
+# Counted straight from the shipped rules file, not through the evaluator.
+SHIPPED_RULE_COUNT = len(
+    yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "app" / "rules" / "causal.yaml").read_text()
+    )["rules"]
+)
 
 # Initialize database once before running API tests
 @pytest.fixture(scope="module", autouse=True)
@@ -17,8 +28,20 @@ def test_health_check():
     assert response.json() == {
         "status": "ok",
         "phase": "3",
-        "service": "datapilot-backend"
+        "service": "datapilot-backend",
+        "causal_rules": {"loaded": SHIPPED_RULE_COUNT, "error": None},
     }
+
+def test_health_reports_causal_rules_that_failed_to_load(monkeypatch):
+    # The backend stays up without its causal rules, but it builds no causal
+    # chains, so /health says why (#89).
+    monkeypatch.setattr(causal_rules_evaluator, "rules", [])
+    monkeypatch.setattr(causal_rules_evaluator, "load_error", "missing", raising=False)
+    response = client.get("/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["causal_rules"] == {"loaded": 0, "error": "missing"}
 
 def test_session_lifecycle():
     # 1. Create session (async background task will start)
