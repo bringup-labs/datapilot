@@ -6,6 +6,7 @@
 # Usage:
 #   docker compose up --build          # auto-merges this override
 #   docker compose build backend       # rebuild a single service
+#   pnpm dev                           # the app builds any missing image from this file
 #
 # To use the production (pull-only) compose without this override:
 #   docker compose -f docker-compose.yml up
