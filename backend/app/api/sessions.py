@@ -18,6 +18,7 @@ from app.config import settings
 from app.schemas import (
     SessionCreate, SessionResponse, TimelineEvent, TopicInfo, LogItem,
     KGraphResponse, ReplayResponse, AnomalyItem,
+    SessionCreateResponse, StatusMessage,
 )
 from app.services.parser import ingestion_parser, scope_log_ids
 from app.services.embeddings import embedding_service
@@ -208,7 +209,7 @@ async def run_ingestion(session_id: str, filepath: str):
                 correlation_id, session_id, e, exc_info=True,
             )
 
-@router.post("/create", status_code=202)
+@router.post("/create", status_code=202, response_model=SessionCreateResponse)
 async def create_session(
     payload: SessionCreate,
     background_tasks: BackgroundTasks,
@@ -270,7 +271,7 @@ async def list_sessions(db: AsyncSession = Depends(get_db)):
         ))
     return response
 
-@router.delete("/{session_id}")
+@router.delete("/{session_id}", response_model=StatusMessage)
 async def delete_session(session_id: str, db: AsyncSession = Depends(get_db)):
     res = await db.execute(select(SessionRecord).where(SessionRecord.id == session_id))
     record = res.scalar_one_or_none()
@@ -288,7 +289,7 @@ async def delete_session(session_id: str, db: AsyncSession = Depends(get_db)):
     await db.commit()
     return {"status": "success", "message": f"Session {session_id} deleted"}
 
-@router.delete("")
+@router.delete("", response_model=StatusMessage)
 async def delete_all_sessions(db: AsyncSession = Depends(get_db)):
     try:
         neo4j_client.run_query("MATCH (n) DETACH DELETE n")

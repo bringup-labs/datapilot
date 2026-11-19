@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+from app.schemas import AgentModelResponse, ReloadSecretsResponse, StatusMessage
 from typing import Optional
 import asyncio
 import json
@@ -52,7 +54,7 @@ class KeyTestRequest(BaseModel):
     key: str
     endpoint: Optional[str] = None
 
-@router.post("/test-key")
+@router.post("/test-key", response_model=StatusMessage)
 async def test_key(payload: KeyTestRequest):
     provider = payload.provider.lower()
     key = payload.key.strip()
@@ -121,7 +123,7 @@ class ModelsListRequest(BaseModel):
     key: str
     endpoint: Optional[str] = None
 
-@router.post("/models")
+@router.post("/models", response_model=list[str])
 async def list_provider_models(payload: ModelsListRequest):
     provider = payload.provider.lower()
     key = payload.key.strip()
@@ -249,7 +251,7 @@ def _apply_key_update(provider: str, key: Optional[str]) -> None:
     get_router.cache_clear()
 
 
-@router.post("/keys")
+@router.post("/keys", response_model=StatusMessage)
 async def update_key(payload: KeyUpdateRequest):
     _apply_key_update(payload.provider, payload.key.strip())
     return {"status": "success", "message": f"Updated API key for {payload.provider.lower()}"}
@@ -298,7 +300,7 @@ def load_secrets_file(path: str) -> int:
     return applied
 
 
-@router.post("/reload-secrets")
+@router.post("/reload-secrets", response_model=ReloadSecretsResponse)
 async def reload_secrets():
     """Re-read the bind-mounted secret file (no secret crosses the wire).
 
@@ -323,7 +325,7 @@ class AgentModelRequest(BaseModel):
     model_id: str
 
 
-@router.get("/agent-models")
+@router.get("/agent-models", response_model=dict[str, str])
 async def get_agent_models(db: AsyncSession = Depends(get_db)):
     from app.models import AgentModelRecord
     from sqlalchemy import select
@@ -331,7 +333,7 @@ async def get_agent_models(db: AsyncSession = Depends(get_db)):
     return {r.specialist: r.model_id for r in rows}
 
 
-@router.put("/agent-models/{specialist}")
+@router.put("/agent-models/{specialist}", response_model=AgentModelResponse, response_model_exclude_none=True)
 async def set_agent_model(specialist: str, payload: AgentModelRequest, db: AsyncSession = Depends(get_db)):
     from app.models import AgentModelRecord
     from app.llm.router import set_specialist_override
@@ -350,7 +352,7 @@ async def set_agent_model(specialist: str, payload: AgentModelRequest, db: Async
     return {"status": "success", "specialist": specialist, "model_id": payload.model_id}
 
 
-@router.delete("/agent-models/{specialist}")
+@router.delete("/agent-models/{specialist}", response_model=AgentModelResponse, response_model_exclude_none=True)
 async def delete_agent_model(specialist: str, db: AsyncSession = Depends(get_db)):
     from app.models import AgentModelRecord
     from app.llm.router import set_specialist_override
