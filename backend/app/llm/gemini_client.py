@@ -80,6 +80,23 @@ def _to_gemini_contents(messages: list[Message]) -> list[dict[str, Any]]:
     return contents
 
 
+def _usage(meta: Any) -> dict[str, int]:
+    """Token usage from a response's `usage_metadata`.
+
+    Thinking tokens are billed as output but reported apart from
+    `candidates_token_count`, so they are added in: leaving them out undercounts
+    what the token-budget guardrail sees (#74). The SDK leaves absent counts as
+    None.
+    """
+    def count(name: str) -> int:
+        return int(getattr(meta, name, 0) or 0)
+
+    return {
+        "input_tokens": count("prompt_token_count"),
+        "output_tokens": count("candidates_token_count") + count("thoughts_token_count"),
+    }
+
+
 class GeminiClient:
     provider = "gemini"
 
@@ -175,10 +192,7 @@ class GeminiClient:
         return {
             "content": text,
             "tool_calls": tool_calls,
-            "usage": {
-                "input_tokens": getattr(usage, "prompt_token_count", 0) if usage else 0,
-                "output_tokens": getattr(usage, "candidates_token_count", 0) if usage else 0,
-            },
+            "usage": _usage(usage),
             "finish_reason": "stop",
         }
 
@@ -198,8 +212,5 @@ class GeminiClient:
             if text:
                 yield {"delta_text": text}
             if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
-                last_usage = {
-                    "input_tokens": getattr(chunk.usage_metadata, "prompt_token_count", 0),
-                    "output_tokens": getattr(chunk.usage_metadata, "candidates_token_count", 0),
-                }
+                last_usage = _usage(chunk.usage_metadata)
         yield {"usage": last_usage or {"input_tokens": 0, "output_tokens": 0}, "finish_reason": "stop"}
