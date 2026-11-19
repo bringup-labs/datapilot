@@ -23,7 +23,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
-from app.llm.base import CompletionChunk, CompletionResponse, LLMClient, Message, ToolDef
+from app.llm.base import CompletionChunk, CompletionResponse, LLMClient, Message, ProviderName, ToolDef
 
 _logger_lock = threading.Lock()
 
@@ -73,7 +73,7 @@ class LoggingLLMClient:
     def __init__(self, inner: LLMClient) -> None:
         self._inner = inner
         self.model_id: str = inner.model_id
-        self.provider: str = inner.provider  # type: ignore[assignment]
+        self.provider: ProviderName = inner.provider
 
     async def complete(
         self,

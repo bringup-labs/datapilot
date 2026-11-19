@@ -36,7 +36,9 @@ from app.db_sqlite import get_db
 from app.services.neo4j_client import neo4j_client
 from app.llm.router import get_router
 from app.models import ChatMessageRecord, SessionCostRecord, SessionRecord
-from app.schemas import ChatRequest
+from pydantic import ValidationError
+
+from app.schemas import ChatHistoryMessage, ChatMessageEnvelope, ChatRequest
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,45 @@ def _json_default(obj: Any) -> Any:
 def _format_sse(event: str, data: Any) -> dict[str, str]:
     """sse-starlette wants {event, data} where data is a JSON string."""
     return {"event": event, "data": json.dumps(data, default=_json_default)}
+
+
+# Envelope lists whose items are model output and can each be malformed.
+_ENVELOPE_ITEM_KEYS = ("findings", "causal", "citations")
+
+
+def _checked_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
+    """Check a `final` payload against `ChatMessageEnvelope` before it is sent
+    or persisted (#69).
+
+    A valid envelope is returned unchanged. Findings, causal steps and citations
+    come from model output, so one malformed item is dropped (and logged) rather
+    than failing the turn or reaching the renderer as a broken card. Anything
+    else that is wrong raises.
+    """
+    try:
+        ChatMessageEnvelope.model_validate(envelope)
+        return envelope
+    except ValidationError as first_error:
+        cleaned = dict(envelope)
+        dropped = 0
+        for key in _ENVELOPE_ITEM_KEYS:
+            items = cleaned.get(key)
+            if not isinstance(items, list):
+                continue
+            kept = []
+            for item in items:
+                try:
+                    ChatMessageEnvelope.model_validate({"response": "", key: [item]})
+                    kept.append(item)
+                except ValidationError:
+                    dropped += 1
+            cleaned[key] = kept
+        ChatMessageEnvelope.model_validate(cleaned)
+        logger.error(
+            "chat: dropped %d malformed item(s) from the final envelope: %s",
+            dropped, first_error.errors(include_input=False, include_url=False)[:5],
+        )
+        return cleaned
 
 
 def _error_event(code: str, exc: Exception, *, recoverable: bool) -> dict[str, str]:
@@ -231,7 +272,7 @@ async def chat(
                     "partial": False
                 }
 
-                yield _format_sse("final", envelope)
+                yield _format_sse("final", _checked_envelope(envelope))
 
                 # Persist outside
                 try:
@@ -342,6 +383,7 @@ async def chat(
                 })
                 return
 
+            final_envelope = _checked_envelope(final_envelope)
             yield _format_sse("final", final_envelope)
 
         # Persist outside the ExitStack so the checkpointer is already closed cleanly.
@@ -388,7 +430,7 @@ def _summary_for(spec_output: dict[str, Any]) -> str:
     return f"{len(findings)} finding(s); top: {top_text}"
 
 
-@router.get("/{session_id}/messages")
+@router.get("/{session_id}/messages", response_model=list[ChatHistoryMessage])
 async def get_messages(
     session_id: str,
     db: AsyncSession = Depends(get_db),

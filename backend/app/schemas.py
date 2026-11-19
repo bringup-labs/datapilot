@@ -179,3 +179,70 @@ class AgentTurnComplete(BaseModel):
     usage: AgentTurnUsage
     steps: List[AgentTurnStep] = Field(default_factory=list, max_length=200)
     status: Literal["completed", "stopped", "failed"]
+
+
+# ── Response models for the JSON endpoints (#69) ────────────────────────────
+
+
+class StatusMessage(BaseModel):
+    """A plain `{status, message}` acknowledgement."""
+    status: str
+    message: str
+
+
+class SessionCreateResponse(BaseModel):
+    session_id: str
+    filepath: str
+    status: str
+
+
+class ChatHistoryExternalUsage(BaseModel):
+    model: str = ""
+    auth_method: str = "none"
+    tool_calls: int = 0
+    est_cost_usd: float = 0.0
+
+
+class ChatHistoryMessage(BaseModel):
+    """One persisted chat message, as GET /sessions/{id}/messages returns it.
+
+    `findings`, `causal` and `plan` are returned as stored: rows written by
+    earlier versions are not guaranteed to match today's envelope models.
+    """
+    role: str
+    content: str
+    created_at: Optional[str] = None
+    findings: Optional[List[Dict[str, Any]]] = None
+    causal: Optional[List[Dict[str, Any]]] = None
+    plan: Optional[List[Dict[str, Any]]] = None
+    answered_by: Optional[str] = None
+    verified: Optional[bool] = None
+    flagged_log_ids: List[str] = Field(default_factory=list)
+    claude_code_usage: Optional[ChatHistoryExternalUsage] = None
+
+
+class McpServerInfo(BaseModel):
+    id: str
+    name: str
+    transport: str
+    enabled: bool
+    status: str
+    tools: int
+    calls_7d: int
+    last_error: Optional[str] = None
+
+
+class McpToggleResponse(BaseModel):
+    id: str
+    enabled: bool
+
+
+class ReloadSecretsResponse(BaseModel):
+    status: str
+    applied: int
+
+
+class AgentModelResponse(BaseModel):
+    status: str
+    specialist: str
+    model_id: Optional[str] = None
