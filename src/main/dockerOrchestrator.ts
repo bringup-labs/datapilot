@@ -698,10 +698,28 @@ class DockerOrchestrator {
     return false;
   }
 
+  /** The boot that is running now, if any. */
+  private bootInFlight: Promise<void> | null = null;
+
   /**
    * Boots the full Docker stack.
+   *
+   * Boot is started at launch and again by `docker:retry`, neither of which
+   * waits for it. A call made while a boot is running returns that boot's
+   * promise instead of starting another: two boots at once race on
+   * `startContainer`'s inspect-then-create and Docker rejects the second
+   * create with a name conflict (#41).
    */
-  public async ensureStackUp(): Promise<void> {
+  public ensureStackUp(): Promise<void> {
+    if (!this.bootInFlight) {
+      this.bootInFlight = this.bootStack().finally(() => {
+        this.bootInFlight = null;
+      });
+    }
+    return this.bootInFlight;
+  }
+
+  private async bootStack(): Promise<void> {
     this.initDocker();
     const wasDaemonOff =
       this.status.state === "error" && this.status.code === "daemon_off";
