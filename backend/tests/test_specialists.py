@@ -126,3 +126,32 @@ def test_performance_react_loop_dispatches_query_mcap():
     tool_results = [e for e in audit if e["step_kind"] == "tool_result"]
     assert any(e["tool"] == "rosbag_reader__query_mcap" for e in tool_results)
     assert any('"session_id": "s1"' in e["args_summary"] for e in tool_results)
+
+
+def test_react_loop_runs_tools_off_the_event_loop(monkeypatch):
+    """#46: a tool's blocking Cypher must not run on the event-loop thread."""
+    import threading
+
+    from app.agent import mcp_client
+
+    seen: list[int] = []
+
+    def _run(_args):
+        seen.append(threading.get_ident())
+        return {"ok": True, "result": {"rows": []}}
+
+    monkeypatch.setenv("DATAPILOT_MCP_TRANSPORT", "in_process")
+    monkeypatch.setitem(mcp_client._REGISTRY[("rosbag_reader", "query_mcap")], "run", _run)
+    client = _ScriptedToolLLM({"regressions": [], "findings": [], "confidence": 0.5})
+
+    async def _go() -> int:
+        await PerformanceProfilerSpecialist().run(
+            router=_SingleClientRouter(client),
+            session_id="s1",
+            intent="count frames",
+            session_summary="",
+        )
+        return threading.get_ident()
+
+    loop_thread = asyncio.run(_go())
+    assert seen and loop_thread not in seen
