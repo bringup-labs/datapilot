@@ -44,6 +44,10 @@ def log_time_to_seconds(t_str: str) -> float:
         logger.debug("Unparseable log time %r, using 0.0", t_str)
         return 0.0
 
+# Most CONCURRENT_WITH edges one log may start (see `evaluate`).
+MAX_CONCURRENT_NEIGHBORS = 20
+
+
 class CausalRulesEvaluator:
     def __init__(self, rules_path: str = RULES_PATH):
         self.rules_path = rules_path
@@ -162,10 +166,13 @@ class CausalRulesEvaluator:
                         })
 
         # 2. Automatic CONCURRENT_WITH relationships
-        # Any pair of logs occurring within 50ms of each other
+        # Each log is linked to the logs that follow it within 50ms, up to
+        # MAX_CONCURRENT_NEIGHBORS of them. Without the cap a burst of logs
+        # sharing a timestamp links every pair: O(n^2) edges written to Neo4j (#84).
         for i in range(len(logs_with_ts)):
             l1 = logs_with_ts[i]
-            for j in range(i + 1, len(logs_with_ts)):
+            last = min(len(logs_with_ts), i + 1 + MAX_CONCURRENT_NEIGHBORS)
+            for j in range(i + 1, last):
                 l2 = logs_with_ts[j]
                 diff_sec = l2["_ts_sec"] - l1["_ts_sec"]
                 if diff_sec <= 0.050:
