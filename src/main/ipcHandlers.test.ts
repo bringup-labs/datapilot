@@ -326,3 +326,81 @@ describe("Claude Code handlers", () => {
     expect(mocks.openExternal).toHaveBeenCalledWith("https://code.claude.com/docs/en/setup");
   });
 });
+
+// #37: the storage folders are roots the main process trusts — `storage:usage`
+// reports on anything under them, and the cache folder is mounted into the
+// backend. They are set only by a folder the user picks in a native dialog.
+describe("storage folders (#37)", () => {
+  const sender = { sender: {} };
+  let outside: string;
+
+  const call = (channel: string, ...args: unknown[]) =>
+    mocks.handlers.get(channel)!(sender, ...args);
+
+  function settingsFile(): Record<string, unknown> {
+    const f = path.join(mocks.userData, "settings.json");
+    return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf-8")) : {};
+  }
+
+  beforeEach(async () => {
+    mocks.userData = tempDir("dp-user-");
+    outside = tempDir("dp-outside-");
+    fs.writeFileSync(path.join(outside, "secret.bin"), "12345");
+    mocks.handlers.clear();
+    mocks.showOpenDialog.mockReset();
+    vi.resetModules();
+    const { registerIpcHandlers } = await import("./ipcHandlers");
+    registerIpcHandlers();
+  });
+
+  afterEach(() => {
+    fs.rmSync(mocks.userData, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  it.each(["cache_dir", "bag_archive_root"])(
+    "settings:set cannot widen what storage:usage reports on via %s",
+    async (key) => {
+      await expect(call("settings:set", key, outside)).rejects.toThrow();
+      expect(settingsFile()).not.toHaveProperty(key);
+      await expect(call("storage:usage", outside)).rejects.toThrow();
+    },
+  );
+
+  it("chooseDirectory saves the folder the user picks, which storage:usage then reports on", async () => {
+    mocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [outside] });
+
+    await expect(call("storage:chooseDirectory", "cache_dir")).resolves.toBe(outside);
+
+    expect(mocks.showOpenDialog.mock.calls[0][1].properties).toContain("openDirectory");
+    expect(settingsFile().cache_dir).toBe(outside);
+    await expect(call("storage:usage", outside)).resolves.toMatchObject({
+      exists: true,
+      totalBytes: 5,
+      fileCount: 1,
+    });
+  });
+
+  it("chooseDirectory saves nothing when the dialog is cancelled", async () => {
+    mocks.showOpenDialog.mockResolvedValue({ canceled: true, filePaths: [] });
+    await expect(call("storage:chooseDirectory", "bag_archive_root")).resolves.toBeNull();
+    expect(settingsFile()).not.toHaveProperty("bag_archive_root");
+  });
+
+  it("chooseDirectory only sets the storage folders", async () => {
+    mocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [outside] });
+    await expect(call("storage:chooseDirectory", "claude_code_path")).rejects.toThrow();
+    expect(mocks.showOpenDialog).not.toHaveBeenCalled();
+    expect(settingsFile()).not.toHaveProperty("claude_code_path");
+  });
+
+  it("resetDirectory goes back to the default folder", async () => {
+    mocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [outside] });
+    await call("storage:chooseDirectory", "cache_dir");
+
+    await call("storage:resetDirectory", "cache_dir");
+
+    expect(settingsFile()).not.toHaveProperty("cache_dir");
+    await expect(call("storage:usage", outside)).rejects.toThrow();
+  });
+});

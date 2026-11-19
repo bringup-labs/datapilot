@@ -293,3 +293,89 @@ async def test_retry_async_success_result_is_never_none():
     wrapped = retry_async()(counter)
     result = await wrapped()
     assert result is not None
+
+
+# ── retry_async: streaming (#74) ───────────────────────────────────────────
+
+
+class _StreamingClient:
+    """`complete(stream=True)` returns an async iterator whose errors surface
+    during iteration, the way every provider client's `_stream` does."""
+
+    def __init__(self, fail_times: int, *, fail_after_chunks: int = 0, exc=None):
+        self.fail_times = fail_times
+        self.fail_after_chunks = fail_after_chunks
+        self.exc = exc or (lambda: _RateLimitError(status_code=429))
+        self.streams_opened = 0
+
+    async def complete(self, *, stream: bool = False):
+        assert stream
+        return self._stream()
+
+    async def _stream(self):
+        self.streams_opened += 1
+        failing = self.streams_opened <= self.fail_times
+        for i in range(3):
+            if failing and i == self.fail_after_chunks:
+                raise self.exc()
+            yield {"delta_text": f"c{i}"}
+
+
+async def _collect(stream) -> list[str]:
+    return [chunk["delta_text"] async for chunk in stream]
+
+
+async def test_retry_async_retries_a_stream_that_fails_before_its_first_chunk(no_sleep):
+    client = _StreamingClient(fail_times=2)
+    complete = retry_async(max_attempts=4)(client.complete)
+
+    assert await _collect(await complete(stream=True)) == ["c0", "c1", "c2"]
+    assert client.streams_opened == 3
+    assert len(no_sleep) == 2
+
+
+async def test_retry_async_does_not_retry_a_stream_that_already_sent_text(no_sleep):
+    # Retrying after text has been shown would repeat it.
+    client = _StreamingClient(fail_times=1, fail_after_chunks=1)
+    complete = retry_async(max_attempts=4)(client.complete)
+
+    seen: list[str] = []
+    with pytest.raises(_RateLimitError):
+        async for chunk in await complete(stream=True):
+            seen.append(chunk["delta_text"])
+    assert seen == ["c0"]
+    assert client.streams_opened == 1
+
+
+async def test_retry_async_gives_up_on_a_stream_after_max_attempts(no_sleep):
+    client = _StreamingClient(fail_times=99)
+    complete = retry_async(max_attempts=3)(client.complete)
+
+    with pytest.raises(_RateLimitError):
+        await _collect(await complete(stream=True))
+    assert client.streams_opened == 3
+
+
+async def test_retry_async_does_not_retry_a_stream_on_other_errors(no_sleep):
+    client = _StreamingClient(fail_times=1, exc=lambda: ValueError("bad request"))
+    complete = retry_async(max_attempts=4)(client.complete)
+
+    with pytest.raises(ValueError):
+        await _collect(await complete(stream=True))
+    assert client.streams_opened == 1
+
+
+def test_gemini_usage_counts_thinking_tokens_as_output():
+    """#74: thinking tokens are billed output; leaving them out undercounts the
+    token budget."""
+    from types import SimpleNamespace
+
+    from app.llm.gemini_client import _usage
+
+    meta = SimpleNamespace(prompt_token_count=100, candidates_token_count=40, thoughts_token_count=25)
+    assert _usage(meta) == {"input_tokens": 100, "output_tokens": 65}
+    # Fields the SDK leaves as None, and a missing usage object, count as 0.
+    assert _usage(SimpleNamespace(prompt_token_count=7, candidates_token_count=None)) == {
+        "input_tokens": 7, "output_tokens": 0,
+    }
+    assert _usage(None) == {"input_tokens": 0, "output_tokens": 0}

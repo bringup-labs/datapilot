@@ -434,3 +434,23 @@ class TestGetFactsGraph:
         session.run.return_value = []
         graph = client.get_facts_graph("sess-1")
         assert graph == {"nodes": [], "edges": []}
+
+
+class TestInitIndexesDefaultDimension:
+    def test_default_dimension_follows_the_active_embedder(self, client_and_session, monkeypatch):
+        """#84: a default-built vector index must match the vectors written to it.
+
+        With no OpenAI key the embedder is MiniLM (384 dims); the old hardcoded
+        1536 default built an index no written vector could match.
+        """
+        from app.services.embeddings import embedding_service
+
+        client, session = client_and_session
+        session.run.return_value = []
+        monkeypatch.setattr(embedding_service, "get_embedding_dimension", lambda: 384)
+
+        client.init_indexes()
+
+        all_cypher = " || ".join(c[0][0] for c in session.run.call_args_list)
+        assert "`vector.dimensions`: 384" in all_cypher
+        assert "1536" not in all_cypher

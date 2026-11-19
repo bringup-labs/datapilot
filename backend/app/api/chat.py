@@ -32,6 +32,8 @@ from sse_starlette.sse import EventSourceResponse
 from app.agent.checkpointer import get_checkpointer
 from app.agent.fact_extractor import extract_facts
 from app.agent.graph import build_graph, initial_state
+from app.agent.supervisor import heuristic_plan
+from app.config import settings
 from app.db_sqlite import get_db
 from app.services.neo4j_client import neo4j_client
 from app.llm.router import get_router
@@ -281,8 +283,29 @@ async def chat(
             emitted_plan = False
             last_plan_idx = 0
 
+            updates = graph.astream(state, config=config, stream_mode="updates").__aiter__()
+            # The supervisor is the first node, so the first update carries the
+            # plan. Wait for it only up to the plan deadline (#55).
+            first_update = asyncio.ensure_future(updates.__anext__())
+
+            async def _graph_updates():
+                try:
+                    yield await first_update
+                except StopAsyncIteration:
+                    return
+                async for later_update in updates:
+                    yield later_update
+
             try:
-                async for update in graph.astream(state, config=config, stream_mode="updates"):
+                done, _ = await asyncio.wait({first_update}, timeout=settings.plan_event_deadline_s)
+                if not done:
+                    # Show a plan now; the supervisor's own plan replaces it when
+                    # it arrives. The model call is not cancelled.
+                    yield _format_sse("plan", {
+                        "plan": heuristic_plan(payload.message),
+                        "provisional": True,
+                    })
+                async for update in _graph_updates():
                     # `update` is {node_name: state_patch}
                     for node_name, patch in update.items():
                         if not isinstance(patch, dict):
@@ -333,6 +356,9 @@ async def chat(
             except Exception as exc:
                 yield _error_event("graph_error", exc, recoverable=False)
                 return
+            finally:
+                # A client that disconnects during the wait leaves this pending.
+                first_update.cancel()
 
             if final_envelope is None:
                 yield _format_sse("error", {

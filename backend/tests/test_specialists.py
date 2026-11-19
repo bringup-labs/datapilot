@@ -128,6 +128,35 @@ def test_performance_react_loop_dispatches_query_mcap():
     assert any('"session_id": "s1"' in e["args_summary"] for e in tool_results)
 
 
+def test_react_loop_runs_tools_off_the_event_loop(monkeypatch):
+    """#46: a tool's blocking Cypher must not run on the event-loop thread."""
+    import threading
+
+    from app.agent import mcp_client
+
+    seen: list[int] = []
+
+    def _run(_args):
+        seen.append(threading.get_ident())
+        return {"ok": True, "result": {"rows": []}}
+
+    monkeypatch.setenv("DATAPILOT_MCP_TRANSPORT", "in_process")
+    monkeypatch.setitem(mcp_client._REGISTRY[("rosbag_reader", "query_mcap")], "run", _run)
+    client = _ScriptedToolLLM({"regressions": [], "findings": [], "confidence": 0.5})
+
+    async def _go() -> int:
+        await PerformanceProfilerSpecialist().run(
+            router=_SingleClientRouter(client),
+            session_id="s1",
+            intent="count frames",
+            session_summary="",
+        )
+        return threading.get_ident()
+
+    loop_thread = asyncio.run(_go())
+    assert seen and loop_thread not in seen
+
+
 class _OutOfSubsetLLM(_ScriptedToolLLM):
     """Calls a tool that exists but belongs to a worker this specialist may not use."""
 
@@ -150,7 +179,6 @@ class _OutOfSubsetLLM(_ScriptedToolLLM):
 def test_react_loop_refuses_tools_outside_the_specialists_workers(monkeypatch, tool_name):
     """#58: worker_subset limits what is dispatched, not only what the LLM is told."""
     from app.agent import mcp_client
-    from app.agent.specialists import base as base_mod
 
     dispatched: list[tuple[str, str]] = []
 
@@ -158,9 +186,8 @@ def test_react_loop_refuses_tools_outside_the_specialists_workers(monkeypatch, t
         dispatched.append((worker, name))
         return {"ok": True, "result": []}
 
+    # The specialist calls `dispatch_async`, which runs `mcp_client.dispatch`.
     monkeypatch.setattr(mcp_client, "dispatch", _record)
-    if hasattr(base_mod, "dispatch"):
-        monkeypatch.setattr(base_mod, "dispatch", _record)
 
     specialist = PerformanceProfilerSpecialist()
     assert "planner_failure_inspector" not in specialist.worker_subset

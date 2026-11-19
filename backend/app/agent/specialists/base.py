@@ -19,7 +19,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from app.agent.mcp_client import dispatch, llm_tool_defs, parse_tool_name
+from app.agent.mcp_client import dispatch_async, llm_tool_defs, parse_tool_name
 from app.agent.state import AuditEvent, Finding, SpecResult, SpecialistName
 from app.llm.base import CompletionResponse, LLMClient, Message
 from app.llm.router import LLMRouter
@@ -189,7 +189,7 @@ class BaseSpecialist:
                 tool_result = self._refuse_tool(tc["name"])
                 if tool_result is None:
                     worker, name = parse_tool_name(tc["name"])
-                    tool_result = dispatch(worker, name, args)
+                    tool_result = await dispatch_async(worker, name, args)
                 audit.append({
                     "step_kind": "tool_result",
                     "specialist": self.name,

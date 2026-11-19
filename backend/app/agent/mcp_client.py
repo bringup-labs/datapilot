@@ -17,6 +17,7 @@ WORKER / NAME / DESCRIPTION / INPUT_SCHEMA / OUTPUT_SCHEMA / run.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -168,6 +169,17 @@ def _dispatch_untimed(worker: str, name: str, args: dict[str, Any]) -> dict[str,
     if transport == "in_process":
         return _dispatch_in_process(worker, name, args)
     return _dispatch_stdio(worker, name, args)
+
+
+async def dispatch_async(worker: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """`dispatch` for async callers.
+
+    Tools are synchronous: in-process they run blocking Cypher on the sync
+    Neo4j driver, and over stdio they block on the worker's pipe. Running them
+    on a worker thread keeps one slow query from freezing every other chat
+    stream on the event loop (#46).
+    """
+    return await asyncio.to_thread(dispatch, worker, name, args)
 
 
 def _dispatch_in_process(worker: str, name: str, args: dict[str, Any]) -> dict[str, Any]:

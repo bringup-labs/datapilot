@@ -9,6 +9,7 @@ this is the citation grounding contract from `docs/implementation.md` §4.10.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -142,13 +143,14 @@ async def composer_node(state: GraphState, *, router: LLMRouter) -> dict[str, An
     causal = _collect_causal(state)
 
     # 2. Resolve citations in Neo4j and filter findings whose log_ids vanished.
+    #    The Neo4j driver is synchronous, so the lookup runs off the event loop (#46).
     #    A failed lookup is retried once and then fails the turn: treating it
     #    as "no log_id exists" would drop every cited finding and present the
     #    emptied answer as grounded (#58).
     try:
-        citations = _resolve_citations(session_id, findings, strict=True)
+        citations = await asyncio.to_thread(_resolve_citations, session_id, findings, strict=True)
     except CitationLookupError:
-        citations = _resolve_citations(session_id, findings, strict=True)
+        citations = await asyncio.to_thread(_resolve_citations, session_id, findings, strict=True)
     valid_log_ids = {c["log_id"] for c in citations}
     findings, uncited = _filter_uncited(findings, valid_log_ids)
     if uncited:
