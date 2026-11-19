@@ -11,7 +11,12 @@
  * type guards / asserts. Keep them small and pure so they remain easy to audit
  * and (eventually) unit-test.
  */
-import type { ClaudeCodeAskRequest, ClaudeCodeModel } from "@shared/ipc";
+import {
+  STORAGE_DIRECTORY_KEYS,
+  type ClaudeCodeAskRequest,
+  type ClaudeCodeModel,
+  type StorageDirectoryKey,
+} from "@shared/ipc";
 
 
 /**
@@ -84,6 +89,10 @@ const PRIVILEGED_SETTINGS_KEYS: ReadonlySet<string> = new Set([
   "docker_socket",
   // The Claude Code binary DataPilot runs; written only by claudeCode:chooseBinary.
   "claude_code_path",
+  // Folders the main process trusts: `storage:usage` reports on anything under
+  // them and `cache_dir` is mounted into the backend (#37). Written only by
+  // storage:chooseDirectory, from a folder the user picks in a native dialog.
+  ...STORAGE_DIRECTORY_KEYS,
 ]);
 
 /**
@@ -97,6 +106,17 @@ export function assertSettableKey(value: unknown, label = "key"): string {
     throw new IpcValidationError(`${label} is not settable from the renderer`);
   }
   return key;
+}
+
+/** Validates the key of a storage folder setting (#37). */
+export function assertStorageDirectoryKey(value: unknown): StorageDirectoryKey {
+  if (
+    typeof value !== "string" ||
+    !(STORAGE_DIRECTORY_KEYS as readonly string[]).includes(value)
+  ) {
+    throw new IpcValidationError("key is not a storage folder");
+  }
+  return value as StorageDirectoryKey;
 }
 
 /**
