@@ -23,5 +23,12 @@ class Settings(BaseSettings):
     # Electron main process bind-mounts read-only. Read at startup and on
     # /settings/reload-secrets so API keys never arrive via Env or HTTP (#39/#32).
     datapilot_secrets_file: Optional[str] = None
+    # The first plan event is due within 2 s of a question (AGENT.md,
+    # "Performance & Resource Budgets"). If the supervisor model has not
+    # answered by this deadline, the chat stream shows a provisional plan (#55).
+    plan_event_deadline_s: float = 1.5
+    # Upper bound on the supervisor's planning call; past it the turn carries on
+    # with the heuristic plan instead of waiting on a hung model (#55).
+    supervisor_plan_timeout_s: float = 20.0
 
 settings = Settings()
