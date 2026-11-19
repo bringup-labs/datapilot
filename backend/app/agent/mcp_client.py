@@ -21,8 +21,11 @@ import asyncio
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any, Callable, TypedDict
 
+from app.config import settings
 from app.agent.tools import (
     find_aborts,
     find_dropouts,
@@ -139,6 +142,29 @@ def dispatch(worker: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
       - "in_process": same as Phase 4 — call the worker tool's `run` directly.
       - "stdio" (default): JSON-RPC over stdio to the worker subprocess.
     """
+    # Tools are synchronous, so the only way to enforce a ceiling is to run the
+    # call on another thread and stop waiting for it (#58). A call that overruns
+    # keeps its thread until it returns; the pool bounds how many can pile up.
+    future = _TOOL_EXECUTOR.submit(_dispatch_untimed, worker, name, args)
+    try:
+        return future.result(timeout=settings.tool_timeout_s)
+    except FutureTimeoutError:
+        future.cancel()
+        logger.warning("dispatch: tool %s.%s exceeded %.1fs", worker, name, settings.tool_timeout_s)
+        return {
+            "ok": False,
+            "error": {
+                "code": "tool_timeout",
+                "message": f"{worker}.{name} did not finish within {settings.tool_timeout_s:g}s",
+                "retryable": True,
+            },
+        }
+
+
+_TOOL_EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="mcp-tool")
+
+
+def _dispatch_untimed(worker: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
     transport = _current_transport()
     if transport == "in_process":
         return _dispatch_in_process(worker, name, args)

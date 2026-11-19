@@ -30,5 +30,9 @@ class Settings(BaseSettings):
     # Upper bound on the supervisor's planning call; past it the turn carries on
     # with the heuristic plan instead of waiting on a hung model (#55).
     supervisor_plan_timeout_s: float = 20.0
+    # Ceiling on one MCP tool call, whichever transport runs it. Past it the
+    # caller gets a retryable `tool_timeout` error (#58). Matches the stdio
+    # transport's own deadline; bag-wide `query_mcap` scans need the headroom.
+    tool_timeout_s: float = 30.0
 
 settings = Settings()

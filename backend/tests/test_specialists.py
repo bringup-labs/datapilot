@@ -155,3 +155,49 @@ def test_react_loop_runs_tools_off_the_event_loop(monkeypatch):
 
     loop_thread = asyncio.run(_go())
     assert seen and loop_thread not in seen
+
+
+class _OutOfSubsetLLM(_ScriptedToolLLM):
+    """Calls a tool that exists but belongs to a worker this specialist may not use."""
+
+    def __init__(self, final, tool_name):
+        super().__init__(final)
+        self._tool_name = tool_name
+
+    async def complete(self, **kwargs):
+        resp = await super().complete(**kwargs)
+        if resp["tool_calls"]:
+            resp["tool_calls"][0]["name"] = self._tool_name
+            resp["tool_calls"][0]["arguments"] = {}
+        return resp
+
+
+@pytest.mark.parametrize("tool_name", [
+    "planner_failure_inspector__query_causal_chain",  # real tool, wrong worker
+    "retrieve_logs",                                  # not worker-qualified
+])
+def test_react_loop_refuses_tools_outside_the_specialists_workers(monkeypatch, tool_name):
+    """#58: worker_subset limits what is dispatched, not only what the LLM is told."""
+    from app.agent import mcp_client
+
+    dispatched: list[tuple[str, str]] = []
+
+    def _record(worker, name, args):
+        dispatched.append((worker, name))
+        return {"ok": True, "result": []}
+
+    # The specialist calls `dispatch_async`, which runs `mcp_client.dispatch`.
+    monkeypatch.setattr(mcp_client, "dispatch", _record)
+
+    specialist = PerformanceProfilerSpecialist()
+    assert "planner_failure_inspector" not in specialist.worker_subset
+    client = _OutOfSubsetLLM({"regressions": [], "findings": [], "confidence": 0.5}, tool_name)
+    result, audit = asyncio.run(specialist.run(
+        router=_SingleClientRouter(client), session_id="s1", intent="x", session_summary="",
+    ))
+
+    assert dispatched == []
+    refused = [e for e in audit if e["step_kind"] == "tool_result"]
+    assert len(refused) == 1 and "tool_unavailable" in refused[0]["result_summary"]
+    # The loop carries on to the model's final answer.
+    assert result["confidence"] == 0.5
