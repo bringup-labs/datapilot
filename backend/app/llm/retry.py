@@ -3,9 +3,13 @@
 Every provider raises a different exception type on a 429, but they all need the
 same treatment: wait (honoring the server-suggested delay when present) and retry
 a few times before giving up. `retry_async` is a decorator for an async `complete`
-method; it only ever retries the non-stream path, because the streaming path
-returns its async iterator immediately (errors surface during iteration, not at
-`await`), so the decorator is a transparent no-op for `stream=True`.
+method.
+
+With `stream=True` the method returns its async iterator immediately and errors
+surface during iteration, not at `await`. So the decorator also wraps a returned
+iterator: an error raised before the first chunk reopens the stream with the
+same backoff. Once a chunk has been passed on, the error is raised as is,
+because retrying would repeat text the caller has already shown.
 """
 from __future__ import annotations
 
@@ -106,10 +110,37 @@ def retry_async(max_attempts: int = 4, base_delay: float = 2.0, max_delay: float
     def decorator(fn: F) -> F:
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            async def _retrying_stream(stream: Any, first_attempt: int) -> Any:
+                """Pass `stream` through, reopening it when it fails with a
+                rate-limit error before its first chunk."""
+                attempt = first_attempt
+                while True:
+                    started = False
+                    try:
+                        async for chunk in stream:
+                            started = True
+                            yield chunk
+                        return
+                    except Exception as exc:  # noqa: BLE001 — re-raised if not retryable
+                        delay = rate_limit_delay(exc)
+                        if started or delay is None or attempt >= max_attempts - 1:
+                            raise
+                        wait = min(delay or (base_delay * (2 ** attempt)), max_delay)
+                        logger.warning(
+                            "LLM stream rate-limited (%s); retry %d/%d in %.1fs",
+                            type(exc).__name__, attempt + 1, max_attempts - 1, wait,
+                        )
+                        await asyncio.sleep(wait)
+                        attempt += 1
+                        stream = await fn(*args, **kwargs)
+
             last_exc: BaseException | None = None
             for attempt in range(max_attempts):
                 try:
-                    return await fn(*args, **kwargs)
+                    result = await fn(*args, **kwargs)
+                    if hasattr(result, "__aiter__"):
+                        return _retrying_stream(result, attempt)
+                    return result
                 except Exception as exc:  # noqa: BLE001 — re-raised below if not retryable
                     last_exc = exc
                     delay = rate_limit_delay(exc)
