@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import type {
   ClaudeCodeChatEvent,
   ClaudeCodeStatus,
@@ -24,7 +24,7 @@ const api: DatapilotApi = {
     status: () => ipcRenderer.invoke("docker:status") as Promise<DockerStatus>,
     retry: () => ipcRenderer.invoke("docker:retry") as Promise<void>,
     onStatusChanged: (callback: (status: DockerStatus) => void) => {
-      const handler = (_event: any, status: DockerStatus) => callback(status);
+      const handler = (_event: IpcRendererEvent, status: DockerStatus) => callback(status);
       ipcRenderer.on("docker:status-changed", handler);
       return () => {
         ipcRenderer.removeListener("docker:status-changed", handler);
@@ -36,7 +36,7 @@ const api: DatapilotApi = {
           ? crypto.randomUUID()
           : `sub_${Date.now()}_${Math.random().toString(36).slice(2)}`;
       const channel = `docker:logs:chunk:${subId}`;
-      const handler = (_event: any, chunk: string) => onChunk(chunk);
+      const handler = (_event: IpcRendererEvent, chunk: string) => onChunk(chunk);
       ipcRenderer.on(channel, handler);
       await ipcRenderer.invoke("docker:logs:start", subId, service);
       return async () => {
@@ -48,7 +48,7 @@ const api: DatapilotApi = {
   file: {
     pickBag: () => ipcRenderer.invoke("file:pickBag") as Promise<string | null>,
     onOpenBag: (callback: (bagPath: string) => void) => {
-      const handler = (_event: any, bagPath: string) => callback(bagPath);
+      const handler = (_event: IpcRendererEvent, bagPath: string) => callback(bagPath);
       ipcRenderer.on("file:open-bag", handler);
       return () => {
         ipcRenderer.removeListener("file:open-bag", handler);
