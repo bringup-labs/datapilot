@@ -157,6 +157,50 @@ describe("ensureStackUp", () => {
   });
 });
 
+// #41: boot runs at launch and again from the Setup screen's Retry button. Two
+// boots at once race on "inspect, then create" and Docker rejects the second
+// create with a name conflict.
+describe("concurrent boots", () => {
+  const containerNames = () =>
+    (state.created as CreatedContainer[]).map((c) => c.name).sort();
+
+  it("a retry during a boot joins that boot instead of starting a second one", async () => {
+    const { dockerOrchestrator } = await import("./dockerOrchestrator");
+
+    const first = dockerOrchestrator.ensureStackUp();
+    const second = dockerOrchestrator.ensureStackUp();
+    await Promise.all([first, second]);
+
+    const names = containerNames();
+    expect(names.length).toBeGreaterThan(0);
+    expect(new Set(names).size).toBe(names.length);
+    expect(dockerOrchestrator.getStatus()).toEqual({ state: "ready" });
+  });
+
+  it("a retry after a boot has finished boots again", async () => {
+    const { dockerOrchestrator } = await import("./dockerOrchestrator");
+
+    await dockerOrchestrator.ensureStackUp();
+    const once = containerNames().length;
+    await dockerOrchestrator.ensureStackUp();
+
+    expect(containerNames().length).toBe(once * 2);
+  });
+
+  it("a boot that failed does not block the next retry", async () => {
+    state.pullErrors = { "neo4j:5-community": new Error("dial tcp: no such host") };
+    const { dockerOrchestrator } = await import("./dockerOrchestrator");
+
+    await dockerOrchestrator.ensureStackUp();
+    const failed = dockerOrchestrator.getStatus();
+    state.pullErrors = {};
+    await dockerOrchestrator.ensureStackUp();
+
+    expect(failed.state).toBe("error");
+    expect(dockerOrchestrator.getStatus()).toEqual({ state: "ready" });
+  });
+});
+
 describe("service images", () => {
   const BACKEND = "ghcr.io/bringup-labs/datapilot-backend";
   const PARSER = "ghcr.io/bringup-labs/datapilot-mcap-parser";
