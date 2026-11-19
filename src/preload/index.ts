@@ -82,6 +82,12 @@ const api: DatapilotApi = {
   },
   storage: {
     usage: (path) => ipcRenderer.invoke("storage:usage", path),
+    chooseDirectory: (key) =>
+      ipcRenderer.invoke("storage:chooseDirectory", key) as Promise<
+        string | null
+      >,
+    resetDirectory: (key) =>
+      ipcRenderer.invoke("storage:resetDirectory", key) as Promise<void>,
   },
   claudeCode: {
     status: () =>

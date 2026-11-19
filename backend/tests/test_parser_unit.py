@@ -380,3 +380,30 @@ class TestParseDb3UndeclaredTopic:
         res = ingestion_parser._parse_db3("/fake/path.db3")
         assert isinstance(res["topics"], list)
         assert "total_messages" in res
+
+
+def test_derive_anomalies_nearest_log_matches_a_linear_scan():
+    """#84: the binary search must pick the same log the O(n*m) scan picked."""
+    import random
+
+    from app.services.parser import _seconds_from_log_t
+
+    rng = random.Random(7)
+    # Unsorted, with duplicate timestamps, as real logs can be.
+    secs = [rng.choice([1, 2, 2, 5, 9, 9, 30, 61, 3600]) + rng.choice([0, 0.25, 0.5]) for _ in range(60)]
+    logs = [
+        {"id": f"l_{i}", "t": f"{int(s // 3600)}:{int(s % 3600 // 60):02d}:{s % 60:06.3f}"}
+        for i, s in enumerate(secs)
+    ]
+    events = [{"type": "anomaly", "t": t, "topic": "/x", "sev": "warning"} for t in [0, 1.9, 2.25, 7.0, 45.5, 5000]]
+
+    got = [a["source_log_id"] for a in _derive_anomalies(events, logs)]
+
+    pairs = [(log["id"], _seconds_from_log_t(log["t"])) for log in logs]
+    want = [min(pairs, key=lambda p: abs(p[1] - ev["t"]))[0] for ev in events]
+    assert got == want
+
+
+def test_derive_anomalies_without_logs_links_nothing():
+    out = _derive_anomalies([{"type": "anomaly", "t": 1.0, "topic": "/x"}], [])
+    assert out[0]["source_log_id"] is None

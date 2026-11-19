@@ -1,6 +1,11 @@
 import { create } from "zustand";
 import { clearAllSessions, updateBackendKey } from "@renderer/services/api";
-import type { ClaudeCodeModel, CopilotEngine } from "@shared/ipc";
+import {
+  STORAGE_DIRECTORY_KEYS,
+  type ClaudeCodeModel,
+  type CopilotEngine,
+  type StorageDirectoryKey,
+} from "@shared/ipc";
 
 export const ACCENT_PRESETS = [
   { color: "oklch(0.74 0.17 235)", label: "Electric" },
@@ -39,6 +44,8 @@ interface SettingsState {
   syncKeysToBackend: () => Promise<void>;
   setSetting: (key: string, value: string | boolean | number) => Promise<void>;
   setApiKey: (provider: string, value: string) => Promise<void>;
+  /** Lets the user pick a storage folder in a native dialog (#37). */
+  chooseStorageDirectory: (key: StorageDirectoryKey) => Promise<void>;
   resetSettings: () => Promise<void>;
 }
 
@@ -285,6 +292,17 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
   },
 
+  chooseStorageDirectory: async (key: StorageDirectoryKey) => {
+    if (!window.datapilot) return;
+    try {
+      const folder = await window.datapilot.storage.chooseDirectory(key);
+      if (folder === null) return;
+      set(key === "cache_dir" ? { cacheDir: folder } : { bagArchiveRoot: folder });
+    } catch (err) {
+      console.error(`Failed to choose ${key}:`, err);
+    }
+  },
+
   setApiKey: async (provider: string, value: string) => {
     if (!window.datapilot) return;
 
@@ -338,8 +356,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         "gpu_passthrough",
         "concurrent_workers",
         "auto_teardown_after",
-        "cache_dir",
-        "bag_archive_root",
+        // cache_dir / bag_archive_root are reset through the main process (#37).
         "auto_index_bags",
         "chunk_window",
         "update_channel",
@@ -349,6 +366,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
       for (const k of keysToReset) {
         await window.datapilot.settings.set(k, "");
+      }
+      for (const k of STORAGE_DIRECTORY_KEYS) {
+        await window.datapilot.storage.resetDirectory(k);
       }
 
       // Clear each provider key from the secure store. We do NOT POST the

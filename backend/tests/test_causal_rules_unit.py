@@ -374,3 +374,34 @@ class TestEvaluate:
         # Threshold met → one edge per matched effect (2 effects → 2 edges).
         assert len(caused2) == 2
         assert {e["target_id"] for e in caused2} == {"e1", "e2"}
+
+
+class TestConcurrentWithIsBounded:
+    """#84: a burst of same-timestamp logs must not write O(n^2) edges."""
+
+    def _burst(self, n):
+        return [
+            {"id": f"l_{i}", "t": "00:00:01.000", "t_sec": 1.0, "node": "/n", "sev": "INFO", "text": "x", "topic": "/t"}
+            for i in range(n)
+        ]
+
+    def test_each_log_gets_at_most_the_neighbor_cap(self):
+        from app.services.causal_rules import MAX_CONCURRENT_NEIGHBORS, CausalRulesEvaluator
+
+        evaluator = CausalRulesEvaluator()
+        evaluator.rules = []
+        edges = [e for e in evaluator.evaluate(self._burst(500)) if e["type"] == "CONCURRENT_WITH"]
+
+        per_source: dict[str, int] = {}
+        for e in edges:
+            per_source[e["source_id"]] = per_source.get(e["source_id"], 0) + 1
+        assert max(per_source.values()) == MAX_CONCURRENT_NEIGHBORS
+        assert len(edges) <= 500 * MAX_CONCURRENT_NEIGHBORS
+
+    def test_small_groups_are_still_fully_connected(self):
+        from app.services.causal_rules import CausalRulesEvaluator
+
+        evaluator = CausalRulesEvaluator()
+        evaluator.rules = []
+        edges = [e for e in evaluator.evaluate(self._burst(4)) if e["type"] == "CONCURRENT_WITH"]
+        assert len(edges) == 6  # every pair of 4 logs

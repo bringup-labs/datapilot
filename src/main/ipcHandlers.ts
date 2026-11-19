@@ -14,6 +14,7 @@ import { signIn } from "./claudeCode/auth";
 import { readVersion } from "./claudeCode/locate";
 import {
   CLAUDE_CODE_INSTALL_GUIDE_URL,
+  STORAGE_DIRECTORY_KEYS,
   type ClaudeCodeStatus,
 } from "@shared/ipc";
 import type {
@@ -27,6 +28,7 @@ import {
   assertKnownService,
   assertSafeKey,
   assertSettableKey,
+  assertStorageDirectoryKey,
   assertString,
   assertSubId,
   assertTheme,
@@ -207,7 +209,7 @@ function getStorageUsageRoots(): string[] {
     path.join(home, "datapilot_bags"), // default orchestrator bag dir
   ];
   const settings = readSettings();
-  for (const key of ["cache_dir", "bag_archive_root"]) {
+  for (const key of STORAGE_DIRECTORY_KEYS) {
     const value = settings[key];
     if (typeof value === "string" && value.trim().length > 0) {
       roots.push(resolveUserPath(value.trim()));
@@ -588,6 +590,44 @@ export function registerIpcHandlers(): void {
         fileCount: usage.fileCount,
         truncated: usage.truncated,
       };
+    },
+  );
+
+  // #37: the storage folders widen what `storage:usage` reports on (and where
+  // the backend's data is mounted from), so the renderer never supplies the
+  // path: it names which folder to change and the user picks it in a dialog.
+  ipcMain.handle(
+    "storage:chooseDirectory",
+    async (event, rawKey: unknown): Promise<string | null> => {
+      const key = assertStorageDirectoryKey(rawKey);
+      const win = BrowserWindow.fromWebContents(event.sender);
+      if (!win) return null;
+      const result = await dialog.showOpenDialog(win, {
+        title:
+          key === "cache_dir"
+            ? "Choose the cache folder"
+            : "Choose the bag archive folder",
+        properties: ["openDirectory", "createDirectory"],
+      });
+      const folder = result.filePaths[0];
+      if (result.canceled || !folder) return null;
+      if (!writeSettings({ ...readSettings(), [key]: folder })) {
+        throw new IpcValidationError("Couldn't save that choice.");
+      }
+      return folder;
+    },
+  );
+
+  ipcMain.handle(
+    "storage:resetDirectory",
+    async (_event, rawKey: unknown): Promise<void> => {
+      const key = assertStorageDirectoryKey(rawKey);
+      const settings = readSettings();
+      if (!(key in settings)) return;
+      delete settings[key];
+      if (!writeSettings(settings)) {
+        throw new IpcValidationError("Couldn't reset that folder.");
+      }
     },
   );
 }

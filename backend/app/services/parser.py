@@ -1,3 +1,4 @@
+import bisect
 import os
 import uuid
 import logging
@@ -392,8 +393,14 @@ def _derive_anomalies(timeline_events: List[Dict[str, Any]], logs: List[Dict[str
     we use the source topic as a proxy.
     """
     anomalies: List[Dict[str, Any]] = []
-    # Pre-parse log timestamps once
-    log_t_pairs = [(log.get("id"), _seconds_from_log_t(log.get("t", "0"))) for log in logs]
+    # Pre-parse log timestamps once, then binary-search them per anomaly: a scan
+    # of every log for every anomaly is O(anomalies x logs) on a real bag (#84).
+    # `first_id_at` keeps the first log at each timestamp, which is the log the
+    # scan picked among equals.
+    first_id_at: Dict[float, Any] = {}
+    for log in logs:
+        first_id_at.setdefault(_seconds_from_log_t(log.get("t", "0")), log.get("id"))
+    log_times = sorted(first_id_at)
 
     anomaly_idx = 0
     for ev in timeline_events:
@@ -404,8 +411,10 @@ def _derive_anomalies(timeline_events: List[Dict[str, Any]], logs: List[Dict[str
 
         # Nearest log id by absolute timestamp delta
         nearest_log_id = None
-        if log_t_pairs:
-            nearest_log_id = min(log_t_pairs, key=lambda pair: abs(pair[1] - t))[0]
+        if log_times:
+            pos = bisect.bisect_left(log_times, t)
+            candidates = log_times[max(0, pos - 1):pos + 1]
+            nearest_log_id = first_id_at[min(candidates, key=lambda log_t: abs(log_t - t))]
 
         anomalies.append({
             "id": f"a_{anomaly_idx}",

@@ -170,3 +170,53 @@ def test_chat_general_session_works():
         assert final_payload["plan"] == []
         assert final_payload["findings"] == []
 
+
+
+def _plan_events(session_id, router, monkeypatch, deadline_s):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "plan_event_deadline_s", deadline_s)
+    with patch("app.api.chat.get_router", return_value=router), \
+         patch("app.api.chat.get_checkpointer", return_value=None):
+        response = TestClient(app).post(
+            f"/api/sessions/{session_id}/chat",
+            json={"message": "Why did navigation abort?"},
+        )
+    events = _parse_sse(response.text)
+    assert "final" in [name for name, _ in events]
+    return [payload for name, payload in events if name == "plan"]
+
+
+def test_chat_sends_a_provisional_plan_when_the_supervisor_is_slow(
+    session_with_demo_data, mock_neo4j, monkeypatch
+):
+    """#55: the first plan event must not wait on a slow supervisor model."""
+    import asyncio
+
+    from tests.fixtures.mock_llm import MockLLMClient
+
+    class _SlowSupervisor(MockLLMClient):
+        async def complete(self, *, system, **kwargs):
+            if "DataPilot Supervisor" in system:
+                await asyncio.sleep(0.4)
+            return await super().complete(system=system, **kwargs)
+
+    plans = _plan_events(
+        session_with_demo_data, MockRouter(client=_SlowSupervisor()), monkeypatch, deadline_s=0.05
+    )
+
+    assert len(plans) == 2
+    assert plans[0]["provisional"] is True
+    assert [s["specialist"] for s in plans[0]["plan"]] == ["RootCauseAnalyst"]
+    # The supervisor's own plan still arrives and replaces the provisional one.
+    assert not plans[1].get("provisional")
+    assert len(plans[1]["plan"]) == 2
+
+
+def test_chat_sends_only_the_real_plan_when_the_supervisor_is_fast(
+    session_with_demo_data, mock_neo4j, monkeypatch
+):
+    plans = _plan_events(session_with_demo_data, MockRouter(), monkeypatch, deadline_s=5)
+
+    assert len(plans) == 1
+    assert not plans[0].get("provisional")

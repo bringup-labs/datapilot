@@ -29,6 +29,13 @@ export interface StorageUsage {
   truncated?: boolean;
 }
 
+/**
+ * Settings keys naming the folders DataPilot stores data in. The main process
+ * trusts them, so they are set only from a native folder dialog (#37).
+ */
+export const STORAGE_DIRECTORY_KEYS = ["cache_dir", "bag_archive_root"] as const;
+export type StorageDirectoryKey = (typeof STORAGE_DIRECTORY_KEYS)[number];
+
 /** Result of a `keychain:set` write so the renderer can surface failures (#51). */
 export interface KeychainSetResult {
   ok: boolean;
@@ -164,6 +171,10 @@ export interface DatapilotApi {
   /** Filesystem usage helpers for renderer panels. */
   storage: {
     usage(path: string): Promise<StorageUsage>;
+    /** Opens a native folder dialog and saves the pick; null if cancelled. */
+    chooseDirectory(key: StorageDirectoryKey): Promise<string | null>;
+    /** Goes back to the default folder. */
+    resetDirectory(key: StorageDirectoryKey): Promise<void>;
   };
   /** Claude Code as a Copilot engine. The renderer never supplies a path or URL. */
   claudeCode: {

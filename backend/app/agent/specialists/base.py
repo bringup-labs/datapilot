@@ -19,7 +19,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from app.agent.mcp_client import dispatch, llm_tool_defs, parse_tool_name
+from app.agent.mcp_client import dispatch_async, llm_tool_defs, parse_tool_name
 from app.agent.state import AuditEvent, Finding, SpecResult, SpecialistName
 from app.llm.base import CompletionResponse, LLMClient, Message
 from app.llm.router import LLMRouter
@@ -198,11 +198,13 @@ class BaseSpecialist:
 
             # Dispatch each tool call and feed the results back.
             for tc in resp["tool_calls"]:
-                worker, name = parse_tool_name(tc["name"])
                 # Always inject session_id from outer state — specialists shouldn't have to thread it.
                 args = {**tc["arguments"], "session_id": session_id}
-                tool_result = dispatch(worker, name, args)
-                _collect_strings(tool_result, observed)
+                tool_result = self._refuse_tool(tc["name"])
+                if tool_result is None:
+                    worker, name = parse_tool_name(tc["name"])
+                    tool_result = await dispatch_async(worker, name, args)
+                    _collect_strings(tool_result, observed)
                 audit.append({
                     "step_kind": "tool_result",
                     "specialist": self.name,
@@ -272,6 +274,31 @@ class BaseSpecialist:
                 ),
             })
         return parsed  # type: ignore[return-value]
+
+    def _refuse_tool(self, qualified_name: str) -> dict[str, Any] | None:
+        """Return a `tool_unavailable` result for a tool this specialist may not
+        call, or None when the call is allowed.
+
+        `worker_subset` already limits the tool definitions the model is given,
+        but the model (or an instruction injected through surfaced log content)
+        can still name any registered tool, so the limit is enforced again at
+        dispatch (#58).
+        """
+        try:
+            worker, _name = parse_tool_name(qualified_name)
+        except ValueError:
+            worker = None
+        if worker is not None and worker in self.worker_subset:
+            return None
+        logger.warning("specialist %s refused out-of-subset tool %r", self.name, qualified_name)
+        return {
+            "ok": False,
+            "error": {
+                "code": "tool_unavailable",
+                "message": f"{qualified_name} is not available to {self.name}",
+                "retryable": False,
+            },
+        }
 
     # ── Parsing helpers ──────────────────────────────────────────────────────
 
