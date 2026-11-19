@@ -76,6 +76,8 @@ def initial_state(
         plan=[],
         plan_idx=0,
         specialist_outputs={},
+        step_results=[],
+        last_result=None,
         retrieval_context=[],
         replan_count=0,
         force_compose=False,

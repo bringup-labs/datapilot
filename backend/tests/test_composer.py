@@ -370,3 +370,17 @@ def test_composer_node_resolves_citations_off_the_event_loop(monkeypatch):
 
     loop_thread = asyncio.run(_run())
     assert seen and loop_thread not in seen
+
+
+def test_collect_findings_keeps_every_step_of_a_specialist_that_ran_twice():
+    """#57: a second run of a specialist must not erase the first run's findings."""
+    first = {"findings": [{"sev": "info", "text": "first", "log_ids": []}]}
+    second = {"findings": [{"sev": "info", "text": "second", "log_ids": []}]}
+    state = _state(
+        specialist_outputs={"RootCauseAnalyst": second},
+        step_results=[
+            {"idx": 0, "specialist": "RootCauseAnalyst", "result": first},
+            {"idx": 1, "specialist": "RootCauseAnalyst", "result": second},
+        ],
+    )
+    assert [f["text"] for f in _collect_findings(state)] == ["first", "second"]

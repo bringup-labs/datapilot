@@ -120,3 +120,28 @@ def test_heuristic_plan_picks_a_specialist_from_the_question():
 
     assert heuristic_plan("Why did it stop?")[0]["specialist"] == "RootCauseAnalyst"
     assert heuristic_plan("Anything odd in this bag?")[0]["specialist"] == "AnomalyDetector"
+
+
+def test_supervisor_audits_dropped_steps_and_keeps_idx_contiguous():
+    """#57: an invalid specialist must not vanish from the plan without a trace."""
+    from tests.fixtures.mock_llm import MockLLMClient, MockRouter
+
+    client = MockLLMClient(overrides={"supervisor": {"plan": [
+        {"idx": 0, "specialist": "MadeUpSpecialist", "intent": "x"},
+        {"idx": 1, "specialist": "RootCauseAnalyst", "intent": "trace"},
+        "not a step",
+        {"idx": 3, "specialist": "AnomalyDetector", "intent": "confirm"},
+    ]}})
+    state = GraphState(
+        session_id="s1", user_message="Why?", transcript=[], plan=[], plan_idx=0,
+        specialist_outputs={}, retrieval_context=[], replan_count=0, audit_trail=[],
+        token_budget_remaining=25_000, final=None, session_summary="",
+    )
+
+    patch = asyncio.run(supervisor_node(state, router=MockRouter(client=client)))
+
+    assert [(s["idx"], s["specialist"]) for s in patch["plan"]] == [
+        (0, "RootCauseAnalyst"), (1, "AnomalyDetector"),
+    ]
+    summary = patch["audit_trail"][0]["result_summary"]
+    assert "dropped 2" in summary and "MadeUpSpecialist" in summary

@@ -42,7 +42,15 @@ def _collect_findings(state: GraphState) -> list[Finding]:
     `_filter_uncited()` below (issue #50). Non-dict entries are skipped.
     """
     findings: list[Finding] = []
-    for spec_result in (state.get("specialist_outputs") or {}).values():
+    # Per-step results keep every run of a specialist used in several plan steps
+    # (#57); `specialist_outputs` only has the latest run per name.
+    step_results = state.get("step_results") or []
+    results = (
+        [r["result"] for r in step_results]
+        if step_results
+        else list((state.get("specialist_outputs") or {}).values())
+    )
+    for spec_result in results:
         for f in spec_result.get("findings", []):
             if not isinstance(f, dict):
                 continue

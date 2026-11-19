@@ -25,14 +25,15 @@ async def dispatcher_node(state: GraphState, *, router: LLMRouter) -> dict[str, 
     plan = state.get("plan", [])
     idx = state.get("plan_idx", 0)
     if idx >= len(plan):
-        return {}
+        # Nothing ran, so there is no fresh result for route_after_dispatch.
+        return {"last_result": None}
 
     step = plan[idx]
     specialist = get_specialist(step["specialist"])
     if specialist is None:
         logger.warning("dispatcher: unknown specialist %s", step["specialist"])
         # Skip this step.
-        return {"plan_idx": idx + 1}
+        return {"plan_idx": idx + 1, "last_result": None}
 
     session_summary = state.get("session_summary", "") if isinstance(state, dict) else ""
     result, audit = await specialist.run(
@@ -48,6 +49,10 @@ async def dispatcher_node(state: GraphState, *, router: LLMRouter) -> dict[str, 
 
     outputs = dict(state.get("specialist_outputs") or {})
     outputs[step["specialist"]] = result
+    # `outputs` holds only the latest result per specialist name. A plan can use
+    # one specialist in several steps, so every result is also kept per step (#57).
+    step_results = list(state.get("step_results") or [])
+    step_results.append({"idx": idx, "specialist": step["specialist"], "result": result})
 
     # Track the per-turn token budget so it's actually decremented (issue #42).
     used = total_tokens_in_audit(list(state.get("audit_trail") or []) + list(audit))
@@ -56,6 +61,8 @@ async def dispatcher_node(state: GraphState, *, router: LLMRouter) -> dict[str, 
         "plan": plan_copy,
         "plan_idx": idx + 1,
         "specialist_outputs": outputs,
+        "step_results": step_results,
+        "last_result": result,
         "audit_trail": audit,
         "token_budget_remaining": max(0, PER_TURN_TOKEN_CAP - used),
     }
@@ -80,10 +87,17 @@ def route_after_dispatch(state: GraphState) -> str:
     if per_turn_cap_exceeded(state.get("audit_trail", []) or []):
         return "composer"
 
-    # Inspect the most recent specialist result.
+    # Inspect the result of the step the dispatcher just ran. `last_result` is
+    # None when it ran nothing (plan exhausted, or an unknown specialist was
+    # skipped): judging the previous step again there re-triggered a replan on a
+    # result that had already caused one, until the replan cap burned (#57).
     if plan and idx > 0 and replan_count < MAX_REPLANS:
-        last_step = plan[idx - 1]
-        last_result = outputs.get(last_step["specialist"]) or {}
+        if "last_result" in state:
+            last_result = state["last_result"] or {}
+        else:
+            # A state checkpointed before `last_result` existed.
+            last_step = plan[idx - 1]
+            last_result = outputs.get(last_step["specialist"]) or {}
         confidence = float(last_result.get("confidence", 1.0))
         had_tool_unavailable = bool(last_result.get("error") == "tool_unavailable")
         if confidence < LOW_CONFIDENCE_THRESHOLD or had_tool_unavailable:
