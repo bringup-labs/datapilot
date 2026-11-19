@@ -15,6 +15,7 @@ import {
   type SecretCrypto,
 } from "./secrets";
 import { getMcpToken } from "./claudeCode/mcpToken";
+import { parseSettings, type AppSettings } from "./settingsFile";
 
 const execAsync = promisify(exec);
 
@@ -24,11 +25,48 @@ interface ImageBuild {
   dockerfile?: string;
 }
 
-/** The `services` of a compose file, as far as building images goes. */
-type ComposeServices = Record<
-  string,
-  { build?: string | { context?: string; dockerfile?: string } } | null | undefined
->;
+/** One service of a compose file, as far as the orchestrator reads it. */
+interface ComposeService {
+  image?: string;
+  build?: string | { context?: string; dockerfile?: string };
+}
+
+/** The `services` of a compose file. A service with no body parses as null. */
+type ComposeServices = Record<string, ComposeService | null | undefined>;
+
+/** A parsed compose file that is known to have a `services` map. */
+interface ComposeFile {
+  services: ComposeServices;
+}
+
+/**
+ * The fields the orchestrator reads off an error thrown by dockerode, Node's
+ * socket layer, or its own code (`dpCode`). Every field is optional: a caught
+ * value can be anything.
+ */
+interface DockerError {
+  message?: string;
+  /** Node system error code, e.g. ENOENT. */
+  code?: string;
+  /** HTTP status from the Docker daemon. */
+  statusCode?: number;
+  json?: { message?: string } | null;
+  /** Set by the orchestrator to pick the Setup pane. */
+  dpCode?: DockerErrorCode;
+}
+
+/** Reads a caught value as a `DockerError` without assuming it is an object. */
+function asDockerError(err: unknown): DockerError {
+  return typeof err === "object" && err !== null
+    ? (err as DockerError)
+    : { message: String(err) };
+}
+
+/** One line of `docker pull` progress. */
+interface PullProgressEvent {
+  status?: string;
+  progress?: string;
+}
 
 /**
  * Says which image failed to download and why, in words the Setup screen
@@ -75,11 +113,11 @@ class DockerOrchestrator {
     this.docker = new Docker({ socketPath: this.socketPath });
   }
 
-  private getSettings(): Record<string, any> {
+  private getSettings(): AppSettings {
     const settingsPath = path.join(app.getPath("userData"), "settings.json");
     if (!fs.existsSync(settingsPath)) return {};
     try {
-      return JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+      return parseSettings(JSON.parse(fs.readFileSync(settingsPath, "utf-8")));
     } catch {
       return {};
     }
@@ -355,8 +393,9 @@ class DockerOrchestrator {
     try {
       await this.docker.ping();
       return true;
-    } catch (err: any) {
-      console.error("Docker ping failed:", err);
+    } catch (caught: unknown) {
+      console.error("Docker ping failed:", caught);
+      const err = asDockerError(caught);
       let code: DockerErrorCode = "unknown";
       let message = err.message || "Unknown Docker error";
 
@@ -404,10 +443,18 @@ class DockerOrchestrator {
     return path.resolve(composeDir, buildRef);
   }
 
-  private getComposeData(): any {
+  private getComposeData(): ComposeFile {
     const composePath = this.resolveComposePath();
     const fileContent = fs.readFileSync(composePath, "utf-8");
-    return yaml.parse(fileContent);
+    const parsed: unknown = yaml.parse(fileContent);
+    const services =
+      typeof parsed === "object" && parsed !== null
+        ? (parsed as { services?: unknown }).services
+        : undefined;
+    if (typeof services !== "object" || services === null || Array.isArray(services)) {
+      throw new Error(`${composePath} has no services`);
+    }
+    return { services: services as ComposeServices };
   }
 
   /**
@@ -505,10 +552,10 @@ class DockerOrchestrator {
     const jobs: Promise<void>[] = [];
     let building = false;
 
-    for (const [serviceName, service] of Object.entries<any>(
+    for (const [serviceName, service] of Object.entries(
       composeData.services,
     )) {
-      const rawImageTag = service.image;
+      const rawImageTag = service?.image;
       if (!rawImageTag) continue;
       const imageTag = this.resolveImageTag(rawImageTag);
 
@@ -597,12 +644,14 @@ class DockerOrchestrator {
         dpCode: "image_pull_failed" as DockerErrorCode,
       });
     return new Promise<void>((resolve, reject) => {
-      this.docker.pull(imageTag, {}, (err: any, stream: any) => {
-        if (err) return reject(failure(err));
+      this.docker.pull(imageTag, {}, (err: Error | null, stream?: NodeJS.ReadableStream) => {
+        if (err || !stream) {
+          return reject(failure(err ?? new Error("Docker returned no pull stream")));
+        }
         this.docker.modem.followProgress(
           stream,
-          (err2: any) => (err2 ? reject(failure(err2)) : resolve()),
-          (event: any) => {
+          (err2: Error | null) => (err2 ? reject(failure(err2)) : resolve()),
+          (event: PullProgressEvent) => {
             if (event.status) {
               process.stdout.write(
                 `[pull:${serviceName}] ${event.status} ${event.progress || ""}\n`,
@@ -619,14 +668,15 @@ class DockerOrchestrator {
    * Errors annotated with `.dpCode` (by ensureImages, startContainer etc.) win;
    * otherwise we inspect the message + statusCode heuristically.
    */
-  private classifyError(err: any): { code: DockerErrorCode; message: string } {
-    if (err?.dpCode) {
-      return { code: err.dpCode, message: err.message || String(err) };
+  private classifyError(caught: unknown): { code: DockerErrorCode; message: string } {
+    const err = asDockerError(caught);
+    if (err.dpCode) {
+      return { code: err.dpCode, message: err.message || String(caught) };
     }
     const raw: string = (
-      err?.message ||
-      err?.json?.message ||
-      String(err) ||
+      err.message ||
+      err.json?.message ||
+      String(caught) ||
       ""
     ).toLowerCase();
     if (
@@ -959,7 +1009,7 @@ class DockerOrchestrator {
 
       console.log("All stack components started successfully.");
       this.setStatus({ state: "ready" });
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Stack boot failed:", err);
       const { code, message } = this.classifyError(err);
       this.setStatus({
@@ -974,7 +1024,10 @@ class DockerOrchestrator {
   /**
    * Helper to create and start a container, managing existing ones if needed.
    */
-  private async startContainer(serviceName: string, config: any): Promise<any> {
+  private async startContainer(
+    serviceName: string,
+    config: Docker.ContainerCreateOptions,
+  ): Promise<Docker.Container> {
     const containerName = `datapilot-${serviceName}`;
     const container = this.docker.getContainer(containerName);
 
@@ -995,8 +1048,8 @@ class DockerOrchestrator {
         this.activeContainers.push(containerName);
       }
       return container;
-    } catch (err: any) {
-      if (err.statusCode !== 404) {
+    } catch (err: unknown) {
+      if (asDockerError(err).statusCode !== 404) {
         throw err;
       }
     }
@@ -1022,20 +1075,21 @@ class DockerOrchestrator {
         this.activeContainers.push(containerName);
       }
       return newContainer;
-    } catch (err: any) {
+    } catch (caught: unknown) {
       // Tag port-bind / create errors so classifyError can route them to the
       // right Setup pane. Docker daemon reports port conflicts via 500-status
       // responses with messages like "port is already allocated".
-      const msg = (err?.message || err?.json?.message || "").toLowerCase();
+      const err = asDockerError(caught);
+      const msg = (err.message || err.json?.message || "").toLowerCase();
       if (
         msg.includes("port is already allocated") ||
         msg.includes("address already in use")
       ) {
-        throw Object.assign(err, {
+        throw Object.assign(caught instanceof Error ? caught : new Error(msg), {
           dpCode: "port_conflict" as DockerErrorCode,
         });
       }
-      throw err;
+      throw caught;
     }
   }
 
@@ -1113,7 +1167,8 @@ class DockerOrchestrator {
         try {
           console.log(`Stopping container ${name}...`);
           await container.stop({ t: 2 }); // Fast SIGTERM with 2s grace
-        } catch (err: any) {
+        } catch (caught: unknown) {
+          const err = asDockerError(caught);
           // Ignore if already stopped (304) or not found (404)
           if (err.statusCode !== 304 && err.statusCode !== 404) {
             console.warn(`Failed to stop container ${name}:`, err.message);
@@ -1123,7 +1178,8 @@ class DockerOrchestrator {
         try {
           console.log(`Removing container ${name}...`);
           await container.remove({ force: true });
-        } catch (err: any) {
+        } catch (caught: unknown) {
+          const err = asDockerError(caught);
           if (err.statusCode !== 404) {
             console.warn(`Failed to remove container ${name}:`, err.message);
           }

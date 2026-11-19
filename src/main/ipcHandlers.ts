@@ -41,6 +41,7 @@ import {
   type SecretCrypto,
 } from "./secrets";
 import { getPathUsageBounded } from "./storageUsage";
+import { parseSettings, type AppSettings } from "./settingsFile";
 
 /** safeStorage adapter for the pure secret helpers (`./secrets`). */
 const safeStorageCrypto: SecretCrypto = {
@@ -69,11 +70,11 @@ function getSettingsPath(): string {
 // before returning empty. Otherwise the next writeSettings() would silently
 // overwrite a partially-recoverable file (including encrypted API keys) with
 // just the one key the caller is setting — irreversible data loss.
-function readSettings(): Record<string, string> {
+function readSettings(): AppSettings {
   const settingsPath = getSettingsPath();
   if (!fs.existsSync(settingsPath)) return {};
   try {
-    return JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    return parseSettings(JSON.parse(fs.readFileSync(settingsPath, "utf-8")));
   } catch (err) {
     console.error("Failed to read settings — rotating to .bak:", err);
     try {
@@ -88,7 +89,7 @@ function readSettings(): Record<string, string> {
 // Returns true on success. Callers that must surface write failures to the
 // renderer (e.g. keychain:set, #51) check the result instead of assuming the
 // write succeeded.
-function writeSettings(settings: Record<string, string>): boolean {
+function writeSettings(settings: AppSettings): boolean {
   const settingsPath = getSettingsPath();
   try {
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
