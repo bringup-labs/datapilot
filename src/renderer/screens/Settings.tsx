@@ -169,6 +169,41 @@ function FieldInput({
   );
 }
 
+/**
+ * A folder the user picks in a native dialog. The path is shown but not typed:
+ * the main process trusts these folders, so it only takes them from the dialog
+ * (#37).
+ */
+function FolderField({
+  label,
+  value,
+  onChoose,
+}: {
+  label: string;
+  value: string;
+  onChoose: () => void;
+}): JSX.Element {
+  return (
+    <div className="input" style={{ height: 32 }}>
+      <input
+        readOnly
+        aria-label={label}
+        value={value}
+        title={value}
+        style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
+      />
+      <button
+        className="btn ghost sm"
+        onClick={onChoose}
+        aria-label={`Choose ${label}`}
+        style={{ height: 22 }}
+      >
+        Choose…
+      </button>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // KeyInput — API key card with reveal/copy
 // ---------------------------------------------------------------------------
@@ -792,8 +827,14 @@ function DockerSection(): JSX.Element {
 }
 
 function StorageSection(): JSX.Element {
-  const { cacheDir, bagArchiveRoot, autoIndexBags, chunkWindow, setSetting } =
-    useSettingsStore();
+  const {
+    cacheDir,
+    bagArchiveRoot,
+    autoIndexBags,
+    chunkWindow,
+    setSetting,
+    chooseStorageDirectory,
+  } = useSettingsStore();
 
   const [clearing, setClearing] = useState(false);
   const [loadingUsage, setLoadingUsage] = useState(false);
@@ -849,10 +890,10 @@ function StorageSection(): JSX.Element {
         hint="DataPilot caches indexed bags here for instant re-load."
       >
         <Row label="Cache directory">
-          <FieldInput
-            mono
+          <FolderField
+            label="cache directory"
             value={cacheDir}
-            onChange={(v) => setSetting("cacheDir", v)}
+            onChoose={() => void chooseStorageDirectory("cache_dir")}
           />
         </Row>
         <Row
@@ -922,10 +963,10 @@ function StorageSection(): JSX.Element {
           </div>
         </Row>
         <Row label="Bag archive root" hint="Where uploaded rosbags are stored.">
-          <FieldInput
-            mono
+          <FolderField
+            label="bag archive root"
             value={bagArchiveRoot}
-            onChange={(v) => setSetting("bagArchiveRoot", v)}
+            onChoose={() => void chooseStorageDirectory("bag_archive_root")}
           />
         </Row>
       </SectionCard>

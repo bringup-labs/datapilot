@@ -148,6 +148,15 @@ describe("extractBagPathFromArgv (#51)", () => {
   });
 });
 
+describe("storage folders (#37)", () => {
+  it.each(["cache_dir", "bag_archive_root"])(
+    "%s is refused from the renderer",
+    (key) => {
+      expect(() => assertSettableKey(key)).toThrow(IpcValidationError);
+    },
+  );
+});
+
 describe("claude_code_path", () => {
   it("is refused from the renderer", () => {
     expect(() => assertSettableKey("claude_code_path")).toThrow(IpcValidationError);
