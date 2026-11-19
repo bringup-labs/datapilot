@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.causal_rules import log_time_to_seconds
-from app.services.neo4j_client import neo4j_client
+from app.agent.tools._neo4j import neo4j_tool, run_cypher
 
 WORKER = "planner_failure_inspector"
 NAME = "query_commands"
@@ -35,6 +35,7 @@ _COMMAND_TOPICS = [
 ]
 
 
+@neo4j_tool
 def run(args: dict[str, Any]) -> dict[str, Any]:
     cypher = """
     MATCH (s:Session {id: $session_id})-[:HAS_LOG]->(l:Log)
@@ -44,13 +45,10 @@ def run(args: dict[str, Any]) -> dict[str, Any]:
            l.node AS node, l.msg AS msg, l.severity AS severity
     ORDER BY l.ts
     """
-    try:
-        results = neo4j_client.run_query(
-            cypher,
-            {"session_id": args["session_id"], "topics": _COMMAND_TOPICS},
-        )
-    except Exception as exc:
-        return {"ok": False, "error": {"code": "neo4j_failed", "message": str(exc), "retryable": True}}
+    results = run_cypher(
+        cypher,
+        {"session_id": args["session_id"], "topics": _COMMAND_TOPICS},
+    )
 
     # Apply optional time window filter in Python (log timestamps are strings).
     t_from = args.get("t_from")

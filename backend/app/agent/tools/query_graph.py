@@ -28,7 +28,7 @@ from typing import Any
 
 from neo4j import Query
 
-from app.services.neo4j_client import neo4j_client
+from app.agent.tools._neo4j import neo4j_tool, run_cypher
 
 WORKER = "rosbag_reader"
 NAME = "query_graph"
@@ -182,6 +182,7 @@ def _query_timeout_s() -> float:
     return value if value > 0 else 10.0
 
 
+@neo4j_tool
 def run(args: dict[str, Any]) -> dict[str, Any]:
     session_id: str = args["session_id"]
     cypher: str = args.get("cypher", "").strip()
@@ -219,16 +220,10 @@ def run(args: dict[str, Any]) -> dict[str, Any]:
     # downstream string handling in the client still works.
     query = Query(cypher, timeout=_query_timeout_s())
 
-    try:
-        rows = neo4j_client.run_query(query, params)
-        # Cap the returned rows even if the query slipped past the textual LIMIT
-        # check (literal "LIMIT" in a string, subquery, …) so a single query can
-        # never return an unbounded set into memory.
-        if isinstance(rows, list) and len(rows) > limit:
-            rows = rows[:limit]
-        return {"ok": True, "result": rows}
-    except Exception as exc:
-        return {
-            "ok": False,
-            "error": {"code": "neo4j_failed", "message": str(exc), "retryable": True},
-        }
+    rows = run_cypher(query, params)
+    # Cap the returned rows even if the query slipped past the textual LIMIT
+    # check (literal "LIMIT" in a string, subquery, …) so a single query can
+    # never return an unbounded set into memory.
+    if isinstance(rows, list) and len(rows) > limit:
+        rows = rows[:limit]
+    return {"ok": True, "result": rows}

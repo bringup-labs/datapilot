@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.neo4j_client import neo4j_client
+from app.agent.tools._neo4j import neo4j_tool, run_cypher
 
 WORKER = "anomaly_detector"
 NAME = "find_dropouts"
@@ -27,6 +27,7 @@ INPUT_SCHEMA: dict[str, Any] = {
 OUTPUT_SCHEMA: dict[str, Any] = {"type": "array"}
 
 
+@neo4j_tool
 def run(args: dict[str, Any]) -> dict[str, Any]:
     cypher = """
     MATCH (s:Session {id: $session_id})-[:HAS_LOG]->(l:Log)
@@ -36,11 +37,8 @@ def run(args: dict[str, Any]) -> dict[str, Any]:
            l.msg AS msg, l.topic AS topic
     ORDER BY l.ts
     """
-    try:
-        results = neo4j_client.run_query(
-            cypher,
-            {"session_id": args["session_id"], "topic": args.get("topic")},
-        )
-        return {"ok": True, "result": results}
-    except Exception as exc:
-        return {"ok": False, "error": {"code": "neo4j_failed", "message": str(exc), "retryable": True}}
+    results = run_cypher(
+        cypher,
+        {"session_id": args["session_id"], "topic": args.get("topic")},
+    )
+    return {"ok": True, "result": results}

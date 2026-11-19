@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from app.agent.specialists.base import BaseSpecialist
 from app.agent.tools import find_aborts, query_graph, query_topic, retrieve_logs
+from app.services.neo4j_client import neo4j_client
 
 
 # ── envelope shape helper ────────────────────────────────────────────────────
@@ -55,7 +56,7 @@ def test_query_topic_neo4j_failed(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("bolt down")
 
-    monkeypatch.setattr(query_topic.neo4j_client, "run_query", _boom)
+    monkeypatch.setattr(neo4j_client, "run_query", _boom)
     env = query_topic.run({"session_id": "s1", "topic": "/scan"})
     _assert_error(env, code="neo4j_failed", retryable=True)
     assert "bolt down" in env["error"]["message"]
@@ -123,7 +124,7 @@ def test_query_graph_appends_limit_when_absent(monkeypatch):
         seen["params"] = params
         return []
 
-    monkeypatch.setattr(query_graph.neo4j_client, "run_query", _capture)
+    monkeypatch.setattr(neo4j_client, "run_query", _capture)
     query_graph.run({"session_id": "s1", "cypher": "MATCH (s:Session {id:$session_id}) RETURN s", "limit": 7})
     # The query is wrapped in a neo4j.Query (to carry a server-side timeout);
     # str(Query) is the underlying text, where the appended LIMIT lives.
@@ -136,7 +137,7 @@ def test_query_graph_neo4j_failed(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("query exploded")
 
-    monkeypatch.setattr(query_graph.neo4j_client, "run_query", _boom)
+    monkeypatch.setattr(neo4j_client, "run_query", _boom)
     env = query_graph.run({"session_id": "s1", "cypher": "MATCH (s:Session {id:$session_id}) RETURN s"})
     _assert_error(env, code="neo4j_failed", retryable=True)
 
@@ -182,7 +183,7 @@ def test_query_graph_blocks_extended_vectors(cypher):
     ],
 )
 def test_query_graph_allows_normal_reads(monkeypatch, cypher):
-    monkeypatch.setattr(query_graph.neo4j_client, "run_query", lambda *a, **k: [])
+    monkeypatch.setattr(neo4j_client, "run_query", lambda *a, **k: [])
     env = query_graph.run({"session_id": "s1", "cypher": cypher})
     _assert_ok(env)
 
@@ -191,7 +192,7 @@ def test_query_graph_row_cap_truncates_oversized_result(monkeypatch):
     # Even if a query slips past the textual LIMIT (e.g. literal "LIMIT" in a
     # string, subquery, …) the tool must not return more rows than the cap.
     over = [{"n": i} for i in range(50)]
-    monkeypatch.setattr(query_graph.neo4j_client, "run_query", lambda *a, **k: over)
+    monkeypatch.setattr(neo4j_client, "run_query", lambda *a, **k: over)
     env = query_graph.run(
         {"session_id": "s1", "cypher": "MATCH (n) RETURN n LIMIT 1000000", "limit": 5}
     )
@@ -210,7 +211,7 @@ def test_query_graph_applies_server_side_timeout(monkeypatch):
         seen["cypher"] = cypher
         return []
 
-    monkeypatch.setattr(query_graph.neo4j_client, "run_query", _capture)
+    monkeypatch.setattr(neo4j_client, "run_query", _capture)
     query_graph.run({"session_id": "s1", "cypher": "MATCH (s:Session {id:$session_id}) RETURN s"})
     q = seen["cypher"]
     assert isinstance(q, Query), f"expected a neo4j.Query carrying a timeout, got {type(q)}"
@@ -230,7 +231,7 @@ def test_find_aborts_neo4j_failed(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("session expired")
 
-    monkeypatch.setattr(find_aborts.neo4j_client, "run_query", _boom)
+    monkeypatch.setattr(neo4j_client, "run_query", _boom)
     env = find_aborts.run({"session_id": "s1"})
     _assert_error(env, code="neo4j_failed", retryable=True)
 
@@ -253,7 +254,7 @@ def test_retrieve_logs_neo4j_failed_after_embed(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("vector index missing")
 
-    monkeypatch.setattr(retrieve_logs.neo4j_client, "run_query", _boom)
+    monkeypatch.setattr(neo4j_client, "run_query", _boom)
     env = retrieve_logs.run({"session_id": "s1", "query": "lidar dropout"})
     _assert_error(env, code="neo4j_failed", retryable=True)
 
@@ -261,7 +262,7 @@ def test_retrieve_logs_neo4j_failed_after_embed(monkeypatch):
 def test_retrieve_logs_ok_no_expand(monkeypatch):
     monkeypatch.setattr(retrieve_logs.embedding_service, "embed_texts", lambda texts: [[0.0, 0.1, 0.2]])
     hits = [{"log_id": "l_1", "ts": "00:00:01.000", "severity": "ERROR", "node": "/n", "msg": "x"}]
-    monkeypatch.setattr(retrieve_logs.neo4j_client, "run_query", lambda *a, **k: hits)
+    monkeypatch.setattr(neo4j_client, "run_query", lambda *a, **k: hits)
     env = retrieve_logs.run({"session_id": "s1", "query": "q", "expand_neighbors": False})
     _assert_ok(env)
     assert env["result"] == hits
@@ -392,7 +393,7 @@ def test_format_causal_chain_survives_a_cycle(monkeypatch):
 
     # root -> a -> b -> a (cycle), plus an island c <-> d with no root at all.
     edges = [_edge("root", "a"), _edge("a", "b"), _edge("b", "a"), _edge("c", "d"), _edge("d", "c")]
-    monkeypatch.setattr(fcc.neo4j_client, "run_query", lambda *a, **k: edges)
+    monkeypatch.setattr(neo4j_client, "run_query", lambda *a, **k: edges)
 
     out = fcc.run({"session_id": "s1"})
 
@@ -415,9 +416,59 @@ def test_format_causal_chain_caps_very_deep_chains(monkeypatch):
         }
         for i in range(3000)
     ]
-    monkeypatch.setattr(fcc.neo4j_client, "run_query", lambda *a, **k: edges)
+    monkeypatch.setattr(neo4j_client, "run_query", lambda *a, **k: edges)
 
     out = fcc.run({"session_id": "s1"})
 
     assert out["ok"] is True
     assert "deeper levels not shown" in out["result"][0]["tree"]
+
+
+# ── #59: one shared Neo4j error envelope for every tool ──────────────────────
+
+
+def _neo4j_backed_tools():
+    from app.agent import mcp_client
+    # query_mcap reads DuckDB, not Neo4j. query_safety_rules runs one query per
+    # rule and reports a failed rule inside an ok result, by design.
+    skipped = {("rosbag_reader", "query_mcap"), ("planner_failure_inspector", "query_safety_rules")}
+    return [(key, desc) for key, desc in sorted(mcp_client._REGISTRY.items()) if key not in skipped]
+
+
+# Arguments that get each tool as far as its first query.
+_ARGS = {
+    "session_id": "s1", "session_id_a": "s1", "session_id_b": "s2", "baseline_session_id": "s0", "topic": "/scan",
+    "node": "/planner", "event_log_id": "l_1", "signature_id": "nope", "metric": "rate",
+    "query": "MATCH (l:Log) RETURN l", "cypher": "MATCH (l:Log) RETURN l",
+}
+
+
+@pytest.mark.parametrize("key", [key for key, _ in _neo4j_backed_tools()], ids=lambda k: ".".join(k))
+def test_every_neo4j_tool_reports_a_failed_query_the_same_way(monkeypatch, key):
+    from app.agent import mcp_client
+    from app.agent.tools import retrieve_logs as retrieve_logs_mod
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("bolt connection refused")
+
+    monkeypatch.setattr(neo4j_client, "run_query", _boom)
+    # retrieve_logs embeds the query before it touches Neo4j.
+    monkeypatch.setattr(retrieve_logs_mod.embedding_service, "embed_texts", lambda texts, **_k: [[0.0] * 4])
+
+    out = mcp_client._REGISTRY[key]["run"](dict(_ARGS))
+
+    assert out == {
+        "ok": False,
+        "error": {"code": "neo4j_failed", "message": "bolt connection refused", "retryable": True},
+    }
+
+
+def test_neo4j_tool_does_not_relabel_other_errors():
+    from app.agent.tools._neo4j import neo4j_tool
+
+    @neo4j_tool
+    def run(args):
+        return {"ok": True, "result": args["missing"]}
+
+    with pytest.raises(KeyError):
+        run({})
