@@ -312,3 +312,24 @@ def test_composer_partial_when_per_turn_token_budget_exhausted(monkeypatch):
         composer_node(_state(replan_count=0, audit_trail=big_audit), router=MockRouter())
     )
     assert out["final"]["partial"] is True
+
+
+def test_composer_node_resolves_citations_off_the_event_loop(monkeypatch):
+    """#46: the blocking Neo4j driver must not run on the event-loop thread."""
+    import threading
+
+    seen: list[int] = []
+
+    def _run_query(*_a, **_k):
+        seen.append(threading.get_ident())
+        return [{"log_id": "l_1", "ts": "0", "node": "/n", "msg": "m"}]
+
+    monkeypatch.setattr(composer_mod.neo4j_client, "run_query", _run_query)
+    outputs = {"RootCauseAnalyst": {"findings": [{"sev": "critical", "text": "A", "log_ids": ["l_1"]}]}}
+
+    async def _run() -> int:
+        await composer_node(_state(specialist_outputs=outputs), router=MockRouter())
+        return threading.get_ident()
+
+    loop_thread = asyncio.run(_run())
+    assert seen and loop_thread not in seen
