@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.neo4j_client import neo4j_client
+from app.agent.tools._neo4j import neo4j_tool, run_cypher
 
 WORKER = "planner_failure_inspector"
 NAME = "query_safety_rules"
@@ -58,13 +58,14 @@ LIMIT 5
 """
 
 
+@neo4j_tool
 def run(args: dict[str, Any]) -> dict[str, Any]:
     session_id = args["session_id"]
     results = []
 
     for rule_name, pattern in _RULES:
         try:
-            evidence = neo4j_client.run_query(
+            evidence = run_cypher(
                 _EVIDENCE_CYPHER,
                 {"session_id": session_id, "pattern": pattern},
             )

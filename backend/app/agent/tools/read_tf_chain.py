@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.neo4j_client import neo4j_client
+from app.agent.tools._neo4j import neo4j_tool, run_cypher
 
 WORKER = "rosbag_reader"
 NAME = "read_tf_chain"
@@ -19,13 +19,11 @@ INPUT_SCHEMA: dict[str, Any] = {
 OUTPUT_SCHEMA: dict[str, Any] = {"type": "array"}
 
 
+@neo4j_tool
 def run(args: dict[str, Any]) -> dict[str, Any]:
     cypher = """
     MATCH (f:Frame {session_id: $session_id})-[:CHILD_OF]->(p:Frame {session_id: $session_id})
     RETURN f.name AS child, p.name AS parent
     """
-    try:
-        results = neo4j_client.run_query(cypher, {"session_id": args["session_id"]})
-        return {"ok": True, "result": results}
-    except Exception as exc:
-        return {"ok": False, "error": {"code": "neo4j_failed", "message": str(exc), "retryable": True}}
+    results = run_cypher(cypher, {"session_id": args["session_id"]})
+    return {"ok": True, "result": results}

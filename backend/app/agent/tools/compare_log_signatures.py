@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.neo4j_client import neo4j_client
+from app.agent.tools._neo4j import neo4j_tool, run_cypher
 
 WORKER = "anomaly_detector"
 NAME = "compare_log_signatures"
@@ -38,8 +38,8 @@ ORDER BY severity
 
 
 def _collect(session_id: str) -> dict[str, Any]:
-    sev_rows = neo4j_client.run_query(_SEVERITY_CYPHER, {"session_id": session_id})
-    anom_rows = neo4j_client.run_query(_ANOMALY_CYPHER, {"session_id": session_id})
+    sev_rows = run_cypher(_SEVERITY_CYPHER, {"session_id": session_id})
+    anom_rows = run_cypher(_ANOMALY_CYPHER, {"session_id": session_id})
     return {
         "log_severity": {r["severity"] or "UNKNOWN": r["count"] for r in sev_rows},
         "anomaly_severity": {r["severity"] or "UNKNOWN": r["count"] for r in anom_rows},
@@ -48,12 +48,10 @@ def _collect(session_id: str) -> dict[str, Any]:
     }
 
 
+@neo4j_tool
 def run(args: dict[str, Any]) -> dict[str, Any]:
-    try:
-        stats_a = _collect(args["session_id_a"])
-        stats_b = _collect(args["session_id_b"])
-    except Exception as exc:
-        return {"ok": False, "error": {"code": "neo4j_failed", "message": str(exc), "retryable": True}}
+    stats_a = _collect(args["session_id_a"])
+    stats_b = _collect(args["session_id_b"])
 
     # Build comparison rows — one per severity level.
     all_sevs = sorted(

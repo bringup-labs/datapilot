@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.causal_rules import log_time_to_seconds
-from app.services.neo4j_client import neo4j_client
+from app.agent.tools._neo4j import neo4j_tool, run_cypher
 
 WORKER = "planner_failure_inspector"
 NAME = "query_causal_chain"
@@ -31,6 +31,7 @@ INPUT_SCHEMA: dict[str, Any] = {
 OUTPUT_SCHEMA: dict[str, Any] = {"type": "array"}
 
 
+@neo4j_tool
 def run(args: dict[str, Any]) -> dict[str, Any]:
     max_hops = int(args.get("max_hops", 6))
     cypher = f"""
@@ -48,13 +49,10 @@ def run(args: dict[str, Any]) -> dict[str, Any]:
       rel.lag_ms AS lag_ms,
       rel.confidence AS confidence
     """
-    try:
-        results = neo4j_client.run_query(
-            cypher,
-            {"session_id": args["session_id"], "event_log_id": args["event_log_id"]},
-        )
-    except Exception as exc:
-        return {"ok": False, "error": {"code": "neo4j_failed", "message": str(exc), "retryable": True}}
+    results = run_cypher(
+        cypher,
+        {"session_id": args["session_id"], "event_log_id": args["event_log_id"]},
+    )
 
     # Order by time (the Neo4j DISTINCT didn't preserve sort).
     results.sort(key=lambda x: log_time_to_seconds(x.get("ts", "0")))

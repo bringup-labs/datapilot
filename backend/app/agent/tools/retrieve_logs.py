@@ -14,7 +14,7 @@ import logging
 from typing import Any
 
 from app.services.embeddings import embedding_service
-from app.services.neo4j_client import neo4j_client
+from app.agent.tools._neo4j import neo4j_tool, run_cypher
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,7 @@ OUTPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+@neo4j_tool
 def run(args: dict[str, Any]) -> dict[str, Any]:
     session_id: str = args["session_id"]
     query: str = args["query"]
@@ -106,21 +107,17 @@ def run(args: dict[str, Any]) -> dict[str, Any]:
     ORDER BY score DESC
     LIMIT $k
     """
-    try:
-        hits = neo4j_client.run_query(
-            cypher,
-            {
-                "session_id": session_id,
-                "query_vec": query_vec,
-                "candidate_k": k * 3,
-                "severity_filter": severity_filter,
-                "topic_filter": topic_filter,
-                "k": k,
-            },
-        )
-    except Exception as exc:
-        logger.exception("neo4j vector search failed")
-        return {"ok": False, "error": {"code": "neo4j_failed", "message": str(exc), "retryable": True}}
+    hits = run_cypher(
+        cypher,
+        {
+            "session_id": session_id,
+            "query_vec": query_vec,
+            "candidate_k": k * 3,
+            "severity_filter": severity_filter,
+            "topic_filter": topic_filter,
+            "k": k,
+        },
+    )
 
     if time_window and len(time_window) >= 2:
         lo, hi = float(time_window[0]), float(time_window[-1])
@@ -167,7 +164,7 @@ def run(args: dict[str, Any]) -> dict[str, Any]:
     neighbors_map: dict[str, list] = {}
     if hits_input:
         try:
-            rows = neo4j_client.run_query(
+            rows = run_cypher(
                 expand_cypher,
                 {"session_id": session_id, "hits": hits_input},
             )

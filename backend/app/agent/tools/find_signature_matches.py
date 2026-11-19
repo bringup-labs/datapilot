@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.neo4j_client import neo4j_client
+from app.agent.tools._neo4j import neo4j_tool, run_cypher
 
 WORKER = "anomaly_detector"
 NAME = "find_signature_matches"
@@ -53,6 +53,7 @@ LIMIT 100
 """
 
 
+@neo4j_tool
 def run(args: dict[str, Any]) -> dict[str, Any]:
     session_id = args["session_id"]
     sig_id = (args.get("signature_id") or "").lower().strip()
@@ -61,14 +62,8 @@ def run(args: dict[str, Any]) -> dict[str, Any]:
     if not pattern:
         # Unknown signature — return all anomaly nodes so the specialist still
         # has something to work with.
-        try:
-            results = neo4j_client.run_query(_FALLBACK_CYPHER, {"session_id": session_id})
-            return {"ok": True, "result": results, "note": f"Unknown signature '{sig_id}'; returned all anomalies."}
-        except Exception as exc:
-            return {"ok": False, "error": {"code": "neo4j_failed", "message": str(exc), "retryable": True}}
+        results = run_cypher(_FALLBACK_CYPHER, {"session_id": session_id})
+        return {"ok": True, "result": results, "note": f"Unknown signature '{sig_id}'; returned all anomalies."}
 
-    try:
-        results = neo4j_client.run_query(_LOG_CYPHER, {"session_id": session_id, "pattern": pattern})
-        return {"ok": True, "result": results}
-    except Exception as exc:
-        return {"ok": False, "error": {"code": "neo4j_failed", "message": str(exc), "retryable": True}}
+    results = run_cypher(_LOG_CYPHER, {"session_id": session_id, "pattern": pattern})
+    return {"ok": True, "result": results}

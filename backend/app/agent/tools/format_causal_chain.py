@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.causal_rules import log_time_to_seconds
-from app.services.neo4j_client import neo4j_client
+from app.agent.tools._neo4j import neo4j_tool, run_cypher
 
 WORKER = "report_composer"
 NAME = "format_causal_chain"
@@ -70,13 +70,11 @@ def _render_tree(
     return lines
 
 
+@neo4j_tool
 def run(args: dict[str, Any]) -> dict[str, Any]:
     session_id = args["session_id"]
 
-    try:
-        edges = neo4j_client.run_query(_EDGE_CYPHER, {"session_id": session_id})
-    except Exception as exc:
-        return {"ok": False, "error": {"code": "neo4j_failed", "message": str(exc), "retryable": True}}
+    edges = run_cypher(_EDGE_CYPHER, {"session_id": session_id})
 
     if not edges:
         return {"ok": True, "result": [{"tree": "(no causal relationships found)", "nodes": []}]}

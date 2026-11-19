@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.neo4j_client import neo4j_client
+from app.agent.tools._neo4j import neo4j_tool, run_cypher
 
 WORKER = "anomaly_detector"
 NAME = "compare_metric_distributions"
@@ -26,6 +26,7 @@ INPUT_SCHEMA: dict[str, Any] = {
 OUTPUT_SCHEMA: dict[str, Any] = {"type": "array"}
 
 
+@neo4j_tool
 def run(args: dict[str, Any]) -> dict[str, Any]:
     cypher = """
     MATCH (s1:Session {id: $session_id_a})-[:HAS_TOPIC]->(t1:Topic)
@@ -38,16 +39,13 @@ def run(args: dict[str, Any]) -> dict[str, Any]:
            t1.type      AS msg_type
     ORDER BY topic
     """
-    try:
-        rows = neo4j_client.run_query(
-            cypher,
-            {
-                "session_id_a": args["session_id_a"],
-                "session_id_b": args["session_id_b"],
-            },
-        )
-    except Exception as exc:
-        return {"ok": False, "error": {"code": "neo4j_failed", "message": str(exc), "retryable": True}}
+    rows = run_cypher(
+        cypher,
+        {
+            "session_id_a": args["session_id_a"],
+            "session_id_b": args["session_id_b"],
+        },
+    )
 
     # Compute deltas in Python to avoid Cypher type-coercion issues.
     metric = args.get("metric", "hz").lower()
