@@ -205,6 +205,43 @@ def test_resolve_citations_snippet_truncated_to_140(monkeypatch):
     assert len(cites[0]["snippet"]) == 140
 
 
+def test_resolve_citations_strict_raises_on_neo4j_error(monkeypatch):
+    """#58: "Neo4j is down" is not the same as "these ids don't exist"."""
+    def _boom(*a, **k):
+        raise RuntimeError("bolt connection refused")
+
+    monkeypatch.setattr(composer_mod.neo4j_client, "run_query", _boom)
+    with pytest.raises(composer_mod.CitationLookupError):
+        _resolve_citations("s1", [{"sev": "info", "text": "t", "log_ids": ["l_1"]}], strict=True)
+
+
+def test_composer_node_does_not_drop_findings_when_neo4j_is_down(monkeypatch):
+    """#58: a Neo4j outage must fail the turn, not present an answer with every
+    cited finding silently removed."""
+    def _boom(*a, **k):
+        raise RuntimeError("bolt connection refused")
+
+    monkeypatch.setattr(composer_mod.neo4j_client, "run_query", _boom)
+    outputs = {"RootCauseAnalyst": {"findings": [{"sev": "critical", "text": "A", "log_ids": ["l_1"]}]}}
+    with pytest.raises(composer_mod.CitationLookupError):
+        asyncio.run(composer_node(_state(specialist_outputs=outputs), router=MockRouter()))
+
+
+def test_composer_node_retries_a_transient_citation_lookup_failure(monkeypatch):
+    calls = {"n": 0}
+
+    def _flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("bolt connection reset")
+        return [{"log_id": "l_1", "ts": "00:00:01.000", "node": "/n", "msg": "m"}]
+
+    monkeypatch.setattr(composer_mod.neo4j_client, "run_query", _flaky)
+    outputs = {"RootCauseAnalyst": {"findings": [{"sev": "critical", "text": "A", "log_ids": ["l_1"]}]}}
+    out = asyncio.run(composer_node(_state(specialist_outputs=outputs), router=MockRouter()))
+    assert [f["text"] for f in out["final"]["findings"]] == ["A"]
+
+
 def test_resolve_citations_swallows_neo4j_error(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("bolt connection refused")

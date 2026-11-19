@@ -37,3 +37,33 @@ def test_llm_tool_defs_uses_double_underscore_qualified_name():
     worker, name = parse_tool_name("rosbag_reader__retrieve_logs")
     assert worker == "rosbag_reader"
     assert name == "retrieve_logs"
+
+
+def test_dispatch_returns_tool_timeout_when_a_tool_overruns(monkeypatch):
+    """#58: a slow tool is cut off with a retryable error instead of running on."""
+    import threading
+    import time
+
+    from app.agent import mcp_client
+    from app.config import settings
+
+    release = threading.Event()
+
+    def _slow(_args):
+        release.wait(5)
+        return {"ok": True, "result": []}
+
+    monkeypatch.setenv("DATAPILOT_MCP_TRANSPORT", "in_process")
+    monkeypatch.setattr(settings, "tool_timeout_s", 0.05)
+    monkeypatch.setitem(mcp_client._REGISTRY[("rosbag_reader", "retrieve_logs")], "run", _slow)
+
+    started = time.perf_counter()
+    try:
+        out = dispatch("rosbag_reader", "retrieve_logs", {"session_id": "s1"})
+    finally:
+        release.set()
+
+    assert time.perf_counter() - started < 2
+    assert out["ok"] is False
+    assert out["error"]["code"] == "tool_timeout"
+    assert out["error"]["retryable"] is True

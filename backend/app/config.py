@@ -23,5 +23,9 @@ class Settings(BaseSettings):
     # Electron main process bind-mounts read-only. Read at startup and on
     # /settings/reload-secrets so API keys never arrive via Env or HTTP (#39/#32).
     datapilot_secrets_file: Optional[str] = None
+    # Ceiling on one MCP tool call, whichever transport runs it. Past it the
+    # caller gets a retryable `tool_timeout` error (#58). Matches the stdio
+    # transport's own deadline; bag-wide `query_mcap` scans need the headroom.
+    tool_timeout_s: float = 30.0
 
 settings = Settings()

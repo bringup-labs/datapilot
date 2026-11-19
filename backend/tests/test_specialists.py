@@ -126,3 +126,51 @@ def test_performance_react_loop_dispatches_query_mcap():
     tool_results = [e for e in audit if e["step_kind"] == "tool_result"]
     assert any(e["tool"] == "rosbag_reader__query_mcap" for e in tool_results)
     assert any('"session_id": "s1"' in e["args_summary"] for e in tool_results)
+
+
+class _OutOfSubsetLLM(_ScriptedToolLLM):
+    """Calls a tool that exists but belongs to a worker this specialist may not use."""
+
+    def __init__(self, final, tool_name):
+        super().__init__(final)
+        self._tool_name = tool_name
+
+    async def complete(self, **kwargs):
+        resp = await super().complete(**kwargs)
+        if resp["tool_calls"]:
+            resp["tool_calls"][0]["name"] = self._tool_name
+            resp["tool_calls"][0]["arguments"] = {}
+        return resp
+
+
+@pytest.mark.parametrize("tool_name", [
+    "planner_failure_inspector__query_causal_chain",  # real tool, wrong worker
+    "retrieve_logs",                                  # not worker-qualified
+])
+def test_react_loop_refuses_tools_outside_the_specialists_workers(monkeypatch, tool_name):
+    """#58: worker_subset limits what is dispatched, not only what the LLM is told."""
+    from app.agent import mcp_client
+    from app.agent.specialists import base as base_mod
+
+    dispatched: list[tuple[str, str]] = []
+
+    def _record(worker, name, args):
+        dispatched.append((worker, name))
+        return {"ok": True, "result": []}
+
+    monkeypatch.setattr(mcp_client, "dispatch", _record)
+    if hasattr(base_mod, "dispatch"):
+        monkeypatch.setattr(base_mod, "dispatch", _record)
+
+    specialist = PerformanceProfilerSpecialist()
+    assert "planner_failure_inspector" not in specialist.worker_subset
+    client = _OutOfSubsetLLM({"regressions": [], "findings": [], "confidence": 0.5}, tool_name)
+    result, audit = asyncio.run(specialist.run(
+        router=_SingleClientRouter(client), session_id="s1", intent="x", session_summary="",
+    ))
+
+    assert dispatched == []
+    refused = [e for e in audit if e["step_kind"] == "tool_result"]
+    assert len(refused) == 1 and "tool_unavailable" in refused[0]["result_summary"]
+    # The loop carries on to the model's final answer.
+    assert result["confidence"] == 0.5

@@ -45,28 +45,51 @@ def _truncate(msg: str | None, n: int = 60) -> str:
     return msg[:n] + "…" if len(msg) > n else msg
 
 
+# CAUSED/TRIGGERED edges come from heuristics and are not guaranteed acyclic,
+# and a long bag can chain thousands of logs. The renderer is iterative, marks
+# a node that is already on the current path instead of following it again, and
+# stops descending past this depth (#58).
+_MAX_DEPTH = 64
+
+
 def _render_tree(
     node_id: str,
     children: dict[str, list[str]],
     nodes: dict[str, dict[str, Any]],
     prefix: str = "",
     is_last: bool = True,
+    ancestors: frozenset[str] = frozenset(),
+    seen: set[str] | None = None,
 ) -> list[str]:
-    n = nodes.get(node_id)
-    connector = "└─ " if is_last else "├─ "
-    label = f"[{n['severity']}] {n['node']}: {_truncate(n['msg'])}" if n else node_id
-    lines = [prefix + connector + label]
+    lines: list[str] = []
+    on_path: set[str] = set(ancestors)
+    # ("enter" | "exit", node id, prefix, is_last, depth)
+    stack: list[tuple[str, str, str, bool, int]] = [("enter", node_id, prefix, is_last, 1)]
+    while stack:
+        kind, nid, pfx, last, depth = stack.pop()
+        if kind == "exit":
+            on_path.discard(nid)
+            continue
 
-    extension = "   " if is_last else "│  "
-    kids = children.get(node_id, [])
-    for i, kid in enumerate(kids):
-        lines.extend(
-            _render_tree(
-                kid, children, nodes,
-                prefix=prefix + extension,
-                is_last=(i == len(kids) - 1),
-            )
-        )
+        n = nodes.get(nid)
+        connector = "└─ " if last else "├─ "
+        label = f"[{n['severity']}] {n['node']}: {_truncate(n['msg'])}" if n else nid
+        if nid in on_path:
+            lines.append(pfx + connector + label + " (cycle: already shown above)")
+            continue
+        lines.append(pfx + connector + label)
+        if seen is not None:
+            seen.add(nid)
+
+        extension = "   " if last else "│  "
+        kids = children.get(nid, [])
+        if kids and depth >= _MAX_DEPTH:
+            lines.append(pfx + extension + "└─ … (deeper levels not shown)")
+            continue
+        on_path.add(nid)
+        stack.append(("exit", nid, "", True, depth))
+        for i in range(len(kids) - 1, -1, -1):
+            stack.append(("enter", kids[i], pfx + extension, i == len(kids) - 1, depth + 1))
     return lines
 
 
@@ -101,11 +124,14 @@ def run(args: dict[str, Any]) -> dict[str, Any]:
     roots.sort(key=lambda nid: log_time_to_seconds(nodes[nid].get("ts", "0")))
 
     lines: list[str] = []
-    for i, root in enumerate(roots):
-        if i > 0:
+    seen: set[str] = set()
+
+    def _render_root(root: str) -> None:
+        if lines:
             lines.append("")
         root_node = nodes[root]
         lines.append(f"┌─ [{root_node['severity']}] {root_node['node']}: {_truncate(root_node['msg'])}")
+        seen.add(root)
         kids = children.get(root, [])
         for j, kid in enumerate(kids):
             lines.extend(
@@ -113,8 +139,18 @@ def run(args: dict[str, Any]) -> dict[str, Any]:
                     kid, children, nodes,
                     prefix="",
                     is_last=(j == len(kids) - 1),
+                    ancestors=frozenset({root}),
+                    seen=seen,
                 )
             )
+
+    for root in roots:
+        _render_root(root)
+    # A group of logs that only cause each other has no root. Start it from its
+    # earliest log so it is still shown.
+    for nid in sorted(nodes, key=lambda nid: log_time_to_seconds(nodes[nid].get("ts", "0"))):
+        if nid not in seen:
+            _render_root(nid)
 
     tree_str = "\n".join(lines)
     raw_nodes = sorted(nodes.values(), key=lambda n: log_time_to_seconds(n.get("ts", "0")))
