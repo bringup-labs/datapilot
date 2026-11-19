@@ -69,17 +69,18 @@ def test_dispatcher_decrements_token_budget_remaining():
     assert 0 <= out["token_budget_remaining"] <= PER_TURN_TOKEN_CAP
 
 
-def test_dispatcher_returns_empty_when_plan_exhausted():
+def test_dispatcher_runs_nothing_when_plan_exhausted():
     plan = [{"idx": 0, "specialist": "RootCauseAnalyst", "intent": "x"}]
     out = asyncio.run(dispatcher_node(_state(plan=plan, plan_idx=1), router=MockRouter()))
-    assert out == {}
+    # No step ran, so there is no fresh result for the router to judge (#57).
+    assert out == {"last_result": None}
 
 
 def test_dispatcher_skips_unknown_specialist():
     plan = [{"idx": 0, "specialist": "NoSuchSpecialist", "intent": "x"}]
     out = asyncio.run(dispatcher_node(_state(plan=plan), router=MockRouter()))
     # Skip path only bumps the pointer; no outputs / no plan rewrite.
-    assert out == {"plan_idx": 1}
+    assert out == {"plan_idx": 1, "last_result": None}
 
 
 def test_dispatcher_preserves_prior_outputs():
@@ -222,3 +223,63 @@ def test_route_continues_when_under_token_cap():
     audit = [{"step_kind": "compose", "tokens_in": 500, "tokens_out": 200}]
     state = _state(plan=plan, plan_idx=1, specialist_outputs=outputs, audit_trail=audit)
     assert route_after_dispatch(state) == "dispatcher"
+
+
+# ── #57: results are kept per plan step, not per specialist name ─────────────
+
+
+def test_dispatcher_keeps_both_results_when_a_specialist_runs_twice():
+    plan = [
+        {"idx": 0, "specialist": "RootCauseAnalyst", "intent": "a", "done": True},
+        {"idx": 1, "specialist": "RootCauseAnalyst", "intent": "b"},
+    ]
+    first = {"specialist": "RootCauseAnalyst", "findings": [{"sev": "info", "text": "first", "log_ids": []}], "confidence": 0.9}
+    out = asyncio.run(dispatcher_node(
+        _state(
+            plan=plan,
+            plan_idx=1,
+            specialist_outputs={"RootCauseAnalyst": first},
+            step_results=[{"idx": 0, "specialist": "RootCauseAnalyst", "result": first}],
+        ),
+        router=MockRouter(),
+    ))
+
+    assert [r["idx"] for r in out["step_results"]] == [0, 1]
+    assert out["step_results"][0]["result"] is first
+    assert out["last_result"] is out["step_results"][1]["result"]
+
+
+def test_route_judges_the_step_that_just_ran_not_a_same_named_earlier_one():
+    plan = [
+        {"idx": 0, "specialist": "RootCauseAnalyst", "intent": "a", "done": True},
+        {"idx": 1, "specialist": "NoSuchSpecialist", "intent": "b"},
+    ]
+    # Step 1 was skipped (unknown specialist), so nothing fresh ran. The stale
+    # low-confidence output under the same name must not trigger a replan.
+    state = _state(
+        plan=plan,
+        plan_idx=2,
+        specialist_outputs={"NoSuchSpecialist": {"confidence": 0.0}},
+        last_result=None,
+    )
+    assert route_after_dispatch(state) == "composer"
+
+
+def test_route_does_not_replan_again_on_the_result_it_already_replanned_for():
+    # replan returned no new steps: the dispatcher had nothing to run, so the
+    # low-confidence result that caused that replan is not judged a second time.
+    plan = [{"idx": 0, "specialist": "RootCauseAnalyst", "intent": "a", "done": True}]
+    state = _state(
+        plan=plan,
+        plan_idx=1,
+        specialist_outputs={"RootCauseAnalyst": {"confidence": 0.1}},
+        replan_count=1,
+        last_result=None,
+    )
+    assert route_after_dispatch(state) == "composer"
+
+
+def test_route_replans_on_a_fresh_low_confidence_result():
+    plan = [{"idx": 0, "specialist": "RootCauseAnalyst", "intent": "a", "done": True}]
+    state = _state(plan=plan, plan_idx=1, last_result={"confidence": 0.1})
+    assert route_after_dispatch(state) == "replan"

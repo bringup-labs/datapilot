@@ -95,15 +95,20 @@ async def supervisor_node(state: GraphState, *, router: LLMRouter) -> dict[str, 
         plan_items = []
 
     # Normalize: ensure each step has idx, specialist, intent + valid specialist.
+    # Steps that are dropped are logged and audited, and `idx` is the step's
+    # position in the plan that is kept, so it stays contiguous (#57).
     plan: list[SpecStep] = []
-    for i, item in enumerate(plan_items):
+    dropped: list[str] = []
+    for item in plan_items:
         if not isinstance(item, dict):
+            dropped.append(repr(item)[:40])
             continue
         specialist = item.get("specialist")
         if specialist not in VALID_SPECIALISTS:
+            dropped.append(str(specialist)[:40])
             continue
         plan.append(SpecStep(
-            idx=i,
+            idx=len(plan),
             specialist=specialist,
             intent=item.get("intent", ""),
             label=item.get("label", item.get("intent", ""))[:60],
@@ -116,12 +121,17 @@ async def supervisor_node(state: GraphState, *, router: LLMRouter) -> dict[str, 
         fallback = "RootCauseAnalyst" if "why" in msg or "cause" in msg else "AnomalyDetector"
         plan = [SpecStep(idx=0, specialist=fallback, intent=state["user_message"], label="Investigate", done=False)]
 
+    summary = f"plan: {len(plan)} steps"
+    if dropped:
+        logger.warning("supervisor: dropped %d invalid plan step(s): %s", len(dropped), dropped)
+        summary += f"; dropped {len(dropped)} invalid step(s): {', '.join(dropped)}"
+
     audit_event = {
         "step_kind": "supervisor_plan",
         "specialist": None,
         "ts": started,
         "tokens_in": resp["usage"]["input_tokens"],
         "tokens_out": resp["usage"]["output_tokens"],
-        "result_summary": f"plan: {len(plan)} steps",
+        "result_summary": summary[:400],
     }
     return {"plan": plan, "plan_idx": 0, "audit_trail": [audit_event]}
