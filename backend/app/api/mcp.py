@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException
 
+from app.schemas import McpServerInfo, McpToggleResponse
 from app.agent.mcp_stdio import WORKER_MODULES
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,7 @@ async def _probe_health(client: httpx.AsyncClient, worker: str) -> dict[str, Any
         return {"status": "error", "tools": 0, "last_error": "probe failed"}
 
 
-@router.get("/servers")
+@router.get("/servers", response_model=list[McpServerInfo])
 async def list_servers() -> list[dict[str, Any]]:
     """Return one entry per worker — what the Agents & MCP screen renders."""
     async with httpx.AsyncClient() as client:
@@ -110,7 +111,7 @@ async def list_servers() -> list[dict[str, Any]]:
     return out
 
 
-@router.post("/servers/{worker_id}/toggle")
+@router.post("/servers/{worker_id}/toggle", response_model=McpToggleResponse)
 async def toggle_server(worker_id: str) -> dict[str, Any]:
     """Flip the worker's enabled flag. Phase 11 persists this to SQLite."""
     if worker_id not in WORKER_MODULES:

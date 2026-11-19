@@ -59,6 +59,12 @@ class CompletionChunk(TypedDict, total=False):
     finish_reason: str             # only on the final chunk
 
 
+# The `provider` value each client class reports. `nvidia` is NimClient's (#69).
+# Note this is not the settings spelling: the `default_provider` setting says
+# "google" for the provider whose client reports "gemini"; the router accepts both.
+ProviderName = Literal["anthropic", "openai", "gemini", "nvidia", "ollama", "mock"]
+
+
 # ── Client Protocol ────────────────────────────────────────────────────────
 
 
@@ -70,7 +76,7 @@ class LLMClient(Protocol):
     """
 
     model_id: str
-    provider: Literal["anthropic", "openai", "gemini", "ollama", "mock"]
+    provider: ProviderName
 
     async def complete(
         self,

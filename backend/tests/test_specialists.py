@@ -126,3 +126,152 @@ def test_performance_react_loop_dispatches_query_mcap():
     tool_results = [e for e in audit if e["step_kind"] == "tool_result"]
     assert any(e["tool"] == "rosbag_reader__query_mcap" for e in tool_results)
     assert any('"session_id": "s1"' in e["args_summary"] for e in tool_results)
+
+
+def test_react_loop_runs_tools_off_the_event_loop(monkeypatch):
+    """#46: a tool's blocking Cypher must not run on the event-loop thread."""
+    import threading
+
+    from app.agent import mcp_client
+
+    seen: list[int] = []
+
+    def _run(_args):
+        seen.append(threading.get_ident())
+        return {"ok": True, "result": {"rows": []}}
+
+    monkeypatch.setenv("DATAPILOT_MCP_TRANSPORT", "in_process")
+    monkeypatch.setitem(mcp_client._REGISTRY[("rosbag_reader", "query_mcap")], "run", _run)
+    client = _ScriptedToolLLM({"regressions": [], "findings": [], "confidence": 0.5})
+
+    async def _go() -> int:
+        await PerformanceProfilerSpecialist().run(
+            router=_SingleClientRouter(client),
+            session_id="s1",
+            intent="count frames",
+            session_summary="",
+        )
+        return threading.get_ident()
+
+    loop_thread = asyncio.run(_go())
+    assert seen and loop_thread not in seen
+
+
+class _OutOfSubsetLLM(_ScriptedToolLLM):
+    """Calls a tool that exists but belongs to a worker this specialist may not use."""
+
+    def __init__(self, final, tool_name):
+        super().__init__(final)
+        self._tool_name = tool_name
+
+    async def complete(self, **kwargs):
+        resp = await super().complete(**kwargs)
+        if resp["tool_calls"]:
+            resp["tool_calls"][0]["name"] = self._tool_name
+            resp["tool_calls"][0]["arguments"] = {}
+        return resp
+
+
+@pytest.mark.parametrize("tool_name", [
+    "planner_failure_inspector__query_causal_chain",  # real tool, wrong worker
+    "retrieve_logs",                                  # not worker-qualified
+])
+def test_react_loop_refuses_tools_outside_the_specialists_workers(monkeypatch, tool_name):
+    """#58: worker_subset limits what is dispatched, not only what the LLM is told."""
+    from app.agent import mcp_client
+
+    dispatched: list[tuple[str, str]] = []
+
+    def _record(worker, name, args):
+        dispatched.append((worker, name))
+        return {"ok": True, "result": []}
+
+    # The specialist calls `dispatch_async`, which runs `mcp_client.dispatch`.
+    monkeypatch.setattr(mcp_client, "dispatch", _record)
+
+    specialist = PerformanceProfilerSpecialist()
+    assert "planner_failure_inspector" not in specialist.worker_subset
+    client = _OutOfSubsetLLM({"regressions": [], "findings": [], "confidence": 0.5}, tool_name)
+    result, audit = asyncio.run(specialist.run(
+        router=_SingleClientRouter(client), session_id="s1", intent="x", session_summary="",
+    ))
+
+    assert dispatched == []
+    refused = [e for e in audit if e["step_kind"] == "tool_result"]
+    assert len(refused) == 1 and "tool_unavailable" in refused[0]["result_summary"]
+    # The loop carries on to the model's final answer.
+    assert result["confidence"] == 0.5
+
+
+class _NeverStopsCallingTools:
+    """Asks for a tool on every turn that offers tools; answers only without them."""
+
+    provider = "mock"
+    model_id = "loops-1"
+
+    def __init__(self, final: dict[str, Any]):
+        self._final = final
+        self.calls_with_tools = 0
+        self.calls_without_tools = 0
+
+    async def complete(self, *, system, messages, tools=None, **_kwargs):
+        if tools:
+            self.calls_with_tools += 1
+            return {
+                "content": None,
+                "tool_calls": [{"id": f"tc_{self.calls_with_tools}", "name": "rosbag_reader__retrieve_logs",
+                                "arguments": {"query": "x"}}],
+                "usage": {"input_tokens": 10, "output_tokens": 2},
+                "finish_reason": "tool_calls",
+            }
+        self.calls_without_tools += 1
+        return {
+            "content": json.dumps(self._final),
+            "tool_calls": [],
+            "usage": {"input_tokens": 10, "output_tokens": 2},
+            "finish_reason": "stop",
+        }
+
+
+def test_react_loop_asks_for_a_final_answer_when_it_runs_out_of_iterations(monkeypatch):
+    """#57: a tool call on the last iteration used to discard the whole run."""
+    from app.agent.specialists import base as base_mod
+
+    monkeypatch.setenv("DATAPILOT_MCP_TRANSPORT", "in_process")
+    final = {"regressions": [], "findings": [{"sev": "info", "text": "ok", "log_ids": []}], "confidence": 0.7}
+    client = _NeverStopsCallingTools(final)
+
+    result, _audit = asyncio.run(PerformanceProfilerSpecialist().run(
+        router=_SingleClientRouter(client), session_id="s1", intent="x", session_summary="",
+    ))
+
+    assert client.calls_with_tools == base_mod.INTERNAL_MAX_ITERS
+    assert client.calls_without_tools == 1
+    assert result.get("error") != "empty_response"
+    assert result["confidence"] == 0.7
+
+
+def test_react_loop_flags_log_ids_no_tool_returned(monkeypatch):
+    """#57: cited log_ids are checked against what the tools returned this run."""
+    from app.agent import mcp_client
+
+    monkeypatch.setenv("DATAPILOT_MCP_TRANSPORT", "in_process")
+    monkeypatch.setitem(
+        mcp_client._REGISTRY[("rosbag_reader", "query_mcap")], "run",
+        lambda _args: {"ok": True, "result": [{"id": "l_1", "msg": "seen"}]},
+    )
+    final = {
+        "regressions": [],
+        "findings": [{"sev": "warning", "text": "x", "log_ids": ["l_1", "l_404"]}],
+        "confidence": 0.8,
+    }
+
+    result, audit = asyncio.run(PerformanceProfilerSpecialist().run(
+        router=_SingleClientRouter(_ScriptedToolLLM(final)), session_id="s1", intent="x", session_summary="",
+    ))
+
+    flagged = [e for e in audit if "not returned by any tool" in e.get("result_summary", "")]
+    assert len(flagged) == 1
+    assert "l_404" in flagged[0]["result_summary"] and "l_1," not in flagged[0]["result_summary"]
+    # Flagged, not removed: the composer still decides what is grounded.
+    assert result["findings"][0]["log_ids"] == ["l_1", "l_404"]

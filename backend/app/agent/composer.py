@@ -9,6 +9,7 @@ this is the citation grounding contract from `docs/implementation.md` §4.10.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -41,7 +42,15 @@ def _collect_findings(state: GraphState) -> list[Finding]:
     `_filter_uncited()` below (issue #50). Non-dict entries are skipped.
     """
     findings: list[Finding] = []
-    for spec_result in (state.get("specialist_outputs") or {}).values():
+    # Per-step results keep every run of a specialist used in several plan steps
+    # (#57); `specialist_outputs` only has the latest run per name.
+    step_results = state.get("step_results") or []
+    results = (
+        [r["result"] for r in step_results]
+        if step_results
+        else list((state.get("specialist_outputs") or {}).values())
+    )
+    for spec_result in results:
         for f in spec_result.get("findings", []):
             if not isinstance(f, dict):
                 continue
@@ -56,8 +65,19 @@ def _collect_causal(state: GraphState) -> list[CausalStep]:
     return list(rca.get("causal") or [])
 
 
-def _resolve_citations(session_id: str, findings: list[Finding]) -> list[Citation]:
-    """Look up the cited log_ids and return a Citation list."""
+class CitationLookupError(RuntimeError):
+    """Neo4j could not be asked which cited log_ids exist."""
+
+
+def _resolve_citations(
+    session_id: str, findings: list[Finding], *, strict: bool = False
+) -> list[Citation]:
+    """Look up the cited log_ids and return a Citation list.
+
+    A failed lookup returns [] unless `strict` is set, in which case it raises
+    `CitationLookupError`: to the caller, [] means "none of these ids exist",
+    which is a different fact from "Neo4j did not answer" (#58).
+    """
     all_ids: list[str] = []
     for f in findings:
         all_ids.extend(f.get("log_ids", []))
@@ -70,8 +90,10 @@ def _resolve_citations(session_id: str, findings: list[Finding]) -> list[Citatio
     """
     try:
         rows = neo4j_client.run_query(cypher, {"session_id": session_id, "log_ids": list(set(all_ids))})
-    except Exception:
+    except Exception as exc:
         logger.exception("composer: citation resolution failed")
+        if strict:
+            raise CitationLookupError("citation lookup failed") from exc
         return []
 
     from app.services.causal_rules import log_time_to_seconds
@@ -129,7 +151,14 @@ async def composer_node(state: GraphState, *, router: LLMRouter) -> dict[str, An
     causal = _collect_causal(state)
 
     # 2. Resolve citations in Neo4j and filter findings whose log_ids vanished.
-    citations = _resolve_citations(session_id, findings)
+    #    The Neo4j driver is synchronous, so the lookup runs off the event loop (#46).
+    #    A failed lookup is retried once and then fails the turn: treating it
+    #    as "no log_id exists" would drop every cited finding and present the
+    #    emptied answer as grounded (#58).
+    try:
+        citations = await asyncio.to_thread(_resolve_citations, session_id, findings, strict=True)
+    except CitationLookupError:
+        citations = await asyncio.to_thread(_resolve_citations, session_id, findings, strict=True)
     valid_log_ids = {c["log_id"] for c in citations}
     findings, uncited = _filter_uncited(findings, valid_log_ids)
     if uncited:

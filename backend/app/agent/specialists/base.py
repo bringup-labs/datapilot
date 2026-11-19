@@ -19,7 +19,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from app.agent.mcp_client import dispatch, llm_tool_defs, parse_tool_name
+from app.agent.mcp_client import dispatch_async, llm_tool_defs, parse_tool_name
 from app.agent.state import AuditEvent, Finding, SpecResult, SpecialistName
 from app.llm.base import CompletionResponse, LLMClient, Message
 from app.llm.router import LLMRouter
@@ -30,6 +30,19 @@ PROMPTS_DIR = Path(__file__).parent.parent / "prompts" / "specialists"
 
 # Per-specialist internal iteration cap — bounds the ReAct loop.
 INTERNAL_MAX_ITERS = 8
+
+
+def _collect_strings(value: Any, into: set[str]) -> None:
+    """Add every string found anywhere in a tool result to `into`."""
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            into.add(item)
+        elif isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
 
 
 class SpecialistKind(str, Enum):
@@ -150,6 +163,7 @@ class BaseSpecialist:
         )
         messages: list[Message] = [{"role": "user", "content": user}]
         last_text = ""
+        observed: set[str] = set()   # every string a tool returned this run
 
         for iteration in range(INTERNAL_MAX_ITERS):
             resp = await client.complete(
@@ -184,10 +198,13 @@ class BaseSpecialist:
 
             # Dispatch each tool call and feed the results back.
             for tc in resp["tool_calls"]:
-                worker, name = parse_tool_name(tc["name"])
                 # Always inject session_id from outer state — specialists shouldn't have to thread it.
                 args = {**tc["arguments"], "session_id": session_id}
-                tool_result = dispatch(worker, name, args)
+                tool_result = self._refuse_tool(tc["name"])
+                if tool_result is None:
+                    worker, name = parse_tool_name(tc["name"])
+                    tool_result = await dispatch_async(worker, name, args)
+                    _collect_strings(tool_result, observed)
                 audit.append({
                     "step_kind": "tool_result",
                     "specialist": self.name,
@@ -203,13 +220,85 @@ class BaseSpecialist:
                     "content": json.dumps(tool_result),
                 })
         else:
-            # Loop ran out — accept whatever the last assistant text was.
+            # The loop ran out while the model was still calling tools. Ask once
+            # more with no tools on offer so the evidence gathered so far becomes
+            # an answer instead of an `empty_response` (#57).
             logger.warning("specialist %s hit INTERNAL_MAX_ITERS without final answer", self.name)
+            messages.append({
+                "role": "user",
+                "content": (
+                    "You have no tool calls left. Using only the tool results above, "
+                    "respond now with the JSON object matching your output schema."
+                ),
+            })
+            resp = await client.complete(
+                system=self.system_prompt(),
+                messages=messages,
+                temperature=0.1,
+            )
+            assert isinstance(resp, dict)
+            audit.append({
+                "step_kind": "compose",
+                "specialist": self.name,
+                "ts": time.perf_counter(),
+                "tokens_in": resp["usage"]["input_tokens"],
+                "tokens_out": resp["usage"]["output_tokens"],
+            })
+            last_text = resp["content"] or ""
 
         # Parse the final response into the specialist's output schema.
         parsed = self._parse_text_as_result(last_text)
         parsed["specialist"] = self.name
+
+        # Re-ground: a cited log_id should have appeared in a tool result this
+        # run. The composer only checks that an id exists in Neo4j, not that this
+        # run saw it, so an id recalled from elsewhere would pass. Flag it in the
+        # audit trail; the findings themselves are left for the composer (#57).
+        cited = {
+            lid
+            for f in parsed.get("findings") or []
+            if isinstance(f, dict)
+            for lid in f.get("log_ids") or []
+            if isinstance(lid, str)
+        }
+        unseen = sorted(cited - observed)
+        if unseen:
+            logger.warning("specialist %s cited log_ids no tool returned: %s", self.name, unseen)
+            audit.append({
+                "step_kind": "error",
+                "specialist": self.name,
+                "ts": time.perf_counter(),
+                "result_summary": _truncate(
+                    f"{len(unseen)} cited log_id(s) not returned by any tool this run: {', '.join(unseen)}",
+                    400,
+                ),
+            })
         return parsed  # type: ignore[return-value]
+
+    def _refuse_tool(self, qualified_name: str) -> dict[str, Any] | None:
+        """Return a `tool_unavailable` result for a tool this specialist may not
+        call, or None when the call is allowed.
+
+        `worker_subset` already limits the tool definitions the model is given,
+        but the model (or an instruction injected through surfaced log content)
+        can still name any registered tool, so the limit is enforced again at
+        dispatch (#58).
+        """
+        try:
+            worker, _name = parse_tool_name(qualified_name)
+        except ValueError:
+            worker = None
+        if worker is not None and worker in self.worker_subset:
+            return None
+        logger.warning("specialist %s refused out-of-subset tool %r", self.name, qualified_name)
+        return {
+            "ok": False,
+            "error": {
+                "code": "tool_unavailable",
+                "message": f"{qualified_name} is not available to {self.name}",
+                "retryable": False,
+            },
+        }
 
     # ── Parsing helpers ──────────────────────────────────────────────────────
 

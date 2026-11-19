@@ -16,7 +16,14 @@ class Neo4jClient:
             result = session.run(query, parameters or {})
             return [record.data() for record in result]
 
-    def init_indexes(self, embedding_dim: int = 1536):
+    def init_indexes(self, embedding_dim: int | None = None):
+        # The vector index must have the dimension of the vectors written to it,
+        # or every vector query errors and search silently falls back to
+        # full-text. So the default follows the active embedder rather than
+        # assuming OpenAI's 1536 (#84).
+        if embedding_dim is None:
+            from app.services.embeddings import embedding_service
+            embedding_dim = embedding_service.get_embedding_dimension()
         # Create standard index constraints
         queries = [
             # Globally-unique Log identity (issue #68): ids are session-scoped

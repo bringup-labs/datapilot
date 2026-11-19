@@ -380,6 +380,50 @@ def test_tool_defs_full_catalog_when_no_subset():
     assert "planner_failure_inspector" in workers
 
 
+def test_format_causal_chain_survives_a_cycle(monkeypatch):
+    """#58: CAUSED/TRIGGERED edges are not guaranteed acyclic."""
+    from app.agent.tools import format_causal_chain as fcc
+
+    def _edge(src, dst):
+        return {
+            "src_id": src, "src_ts": "00:00:01.000", "src_node": "/a", "src_sev": "ERROR", "src_msg": src,
+            "dst_id": dst, "dst_ts": "00:00:02.000", "dst_node": "/b", "dst_sev": "ERROR", "dst_msg": dst,
+            "edge_type": "CAUSED",
+        }
+
+    # root -> a -> b -> a (cycle), plus an island c <-> d with no root at all.
+    edges = [_edge("root", "a"), _edge("a", "b"), _edge("b", "a"), _edge("c", "d"), _edge("d", "c")]
+    monkeypatch.setattr(neo4j_client, "run_query", lambda *a, **k: edges)
+
+    out = fcc.run({"session_id": "s1"})
+
+    assert out["ok"] is True
+    tree = out["result"][0]["tree"]
+    assert "cycle" in tree
+    # Every node is shown, including the rootless island.
+    for msg in ("root", "a", "b", "c", "d"):
+        assert f": {msg}" in tree
+
+
+def test_format_causal_chain_caps_very_deep_chains(monkeypatch):
+    from app.agent.tools import format_causal_chain as fcc
+
+    edges = [
+        {
+            "src_id": f"n{i}", "src_ts": "0", "src_node": "/a", "src_sev": "ERROR", "src_msg": f"m{i}",
+            "dst_id": f"n{i + 1}", "dst_ts": "0", "dst_node": "/a", "dst_sev": "ERROR", "dst_msg": f"m{i + 1}",
+            "edge_type": "CAUSED",
+        }
+        for i in range(3000)
+    ]
+    monkeypatch.setattr(neo4j_client, "run_query", lambda *a, **k: edges)
+
+    out = fcc.run({"session_id": "s1"})
+
+    assert out["ok"] is True
+    assert "deeper levels not shown" in out["result"][0]["tree"]
+
+
 # ── #59: one shared Neo4j error envelope for every tool ──────────────────────
 
 

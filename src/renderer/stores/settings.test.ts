@@ -39,6 +39,12 @@ function installDatapilotStub(overrides: Record<string, unknown> = {}) {
         return { ok: true };
       }),
     },
+    storage: {
+      chooseDirectory: vi.fn(async (): Promise<string | null> => null),
+      resetDirectory: vi.fn(async (key: string) => {
+        settingsMap.delete(key);
+      }),
+    },
     ...overrides,
   };
 
@@ -410,6 +416,42 @@ describe("useSettingsStore", () => {
       delete (window as unknown as { datapilot?: unknown }).datapilot;
       await useSettingsStore.getState().resetSettings();
       expect(mockedClearAllSessions).not.toHaveBeenCalled();
+    });
+
+    // #37: the storage folders are not writable through settings.set.
+    it("resets the storage folders through the main process", async () => {
+      const { stub, settingsMap } = installDatapilotStub();
+      settingsMap.set("cache_dir", "/Volumes/big/cache");
+
+      await useSettingsStore.getState().resetSettings();
+
+      expect(stub.settings.set).not.toHaveBeenCalledWith("cache_dir", expect.anything());
+      expect(stub.settings.set).not.toHaveBeenCalledWith("bag_archive_root", expect.anything());
+      expect(stub.storage.resetDirectory).toHaveBeenCalledWith("cache_dir");
+      expect(stub.storage.resetDirectory).toHaveBeenCalledWith("bag_archive_root");
+      expect(useSettingsStore.getState().cacheDir).toBe("/Users/test/Library/datapilot");
+    });
+  });
+
+  describe("chooseStorageDirectory (#37)", () => {
+    it("shows the folder the user picked", async () => {
+      const { stub } = installDatapilotStub();
+      stub.storage.chooseDirectory.mockResolvedValue("/Volumes/big/bags");
+
+      await useSettingsStore.getState().chooseStorageDirectory("bag_archive_root");
+
+      expect(stub.storage.chooseDirectory).toHaveBeenCalledWith("bag_archive_root");
+      expect(useSettingsStore.getState().bagArchiveRoot).toBe("/Volumes/big/bags");
+      expect(stub.settings.set).not.toHaveBeenCalled();
+    });
+
+    it("keeps the current folder when the dialog is cancelled", async () => {
+      installDatapilotStub();
+      useSettingsStore.setState({ cacheDir: "/current" });
+
+      await useSettingsStore.getState().chooseStorageDirectory("cache_dir");
+
+      expect(useSettingsStore.getState().cacheDir).toBe("/current");
     });
   });
 });

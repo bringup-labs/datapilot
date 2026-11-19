@@ -205,6 +205,43 @@ def test_resolve_citations_snippet_truncated_to_140(monkeypatch):
     assert len(cites[0]["snippet"]) == 140
 
 
+def test_resolve_citations_strict_raises_on_neo4j_error(monkeypatch):
+    """#58: "Neo4j is down" is not the same as "these ids don't exist"."""
+    def _boom(*a, **k):
+        raise RuntimeError("bolt connection refused")
+
+    monkeypatch.setattr(composer_mod.neo4j_client, "run_query", _boom)
+    with pytest.raises(composer_mod.CitationLookupError):
+        _resolve_citations("s1", [{"sev": "info", "text": "t", "log_ids": ["l_1"]}], strict=True)
+
+
+def test_composer_node_does_not_drop_findings_when_neo4j_is_down(monkeypatch):
+    """#58: a Neo4j outage must fail the turn, not present an answer with every
+    cited finding silently removed."""
+    def _boom(*a, **k):
+        raise RuntimeError("bolt connection refused")
+
+    monkeypatch.setattr(composer_mod.neo4j_client, "run_query", _boom)
+    outputs = {"RootCauseAnalyst": {"findings": [{"sev": "critical", "text": "A", "log_ids": ["l_1"]}]}}
+    with pytest.raises(composer_mod.CitationLookupError):
+        asyncio.run(composer_node(_state(specialist_outputs=outputs), router=MockRouter()))
+
+
+def test_composer_node_retries_a_transient_citation_lookup_failure(monkeypatch):
+    calls = {"n": 0}
+
+    def _flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("bolt connection reset")
+        return [{"log_id": "l_1", "ts": "00:00:01.000", "node": "/n", "msg": "m"}]
+
+    monkeypatch.setattr(composer_mod.neo4j_client, "run_query", _flaky)
+    outputs = {"RootCauseAnalyst": {"findings": [{"sev": "critical", "text": "A", "log_ids": ["l_1"]}]}}
+    out = asyncio.run(composer_node(_state(specialist_outputs=outputs), router=MockRouter()))
+    assert [f["text"] for f in out["final"]["findings"]] == ["A"]
+
+
 def test_resolve_citations_swallows_neo4j_error(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("bolt connection refused")
@@ -312,3 +349,38 @@ def test_composer_partial_when_per_turn_token_budget_exhausted(monkeypatch):
         composer_node(_state(replan_count=0, audit_trail=big_audit), router=MockRouter())
     )
     assert out["final"]["partial"] is True
+
+
+def test_composer_node_resolves_citations_off_the_event_loop(monkeypatch):
+    """#46: the blocking Neo4j driver must not run on the event-loop thread."""
+    import threading
+
+    seen: list[int] = []
+
+    def _run_query(*_a, **_k):
+        seen.append(threading.get_ident())
+        return [{"log_id": "l_1", "ts": "0", "node": "/n", "msg": "m"}]
+
+    monkeypatch.setattr(composer_mod.neo4j_client, "run_query", _run_query)
+    outputs = {"RootCauseAnalyst": {"findings": [{"sev": "critical", "text": "A", "log_ids": ["l_1"]}]}}
+
+    async def _run() -> int:
+        await composer_node(_state(specialist_outputs=outputs), router=MockRouter())
+        return threading.get_ident()
+
+    loop_thread = asyncio.run(_run())
+    assert seen and loop_thread not in seen
+
+
+def test_collect_findings_keeps_every_step_of_a_specialist_that_ran_twice():
+    """#57: a second run of a specialist must not erase the first run's findings."""
+    first = {"findings": [{"sev": "info", "text": "first", "log_ids": []}]}
+    second = {"findings": [{"sev": "info", "text": "second", "log_ids": []}]}
+    state = _state(
+        specialist_outputs={"RootCauseAnalyst": second},
+        step_results=[
+            {"idx": 0, "specialist": "RootCauseAnalyst", "result": first},
+            {"idx": 1, "specialist": "RootCauseAnalyst", "result": second},
+        ],
+    )
+    assert [f["text"] for f in _collect_findings(state)] == ["first", "second"]

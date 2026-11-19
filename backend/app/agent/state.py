@@ -129,6 +129,14 @@ class ChatMessageEnvelope(TypedDict, total=False):
     partial: bool
 
 
+class StepResult(TypedDict):
+    """What one plan step produced. Kept per step because a plan may use the
+    same specialist more than once (#57)."""
+    idx: int
+    specialist: str
+    result: SpecResult
+
+
 # ── Top-level graph state ─────────────────────────────────────────────────
 
 
@@ -148,7 +156,9 @@ class GraphState(TypedDict, total=False):
     composer_model: str | None
     plan: list[SpecStep]
     plan_idx: int                                                # current step pointer
-    specialist_outputs: dict[str, SpecResult]
+    specialist_outputs: dict[str, SpecResult]                    # latest result per specialist name
+    step_results: list[StepResult]                               # every result, in the order steps ran
+    last_result: SpecResult | None                               # result of the dispatcher's latest run, if a step ran
     retrieval_context: Annotated[list[Citation], operator.add]
     replan_count: int                                            # cap = MAX_REPLANS
     force_compose: bool                                          # replan overflow → partial compose
